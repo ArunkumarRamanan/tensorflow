@@ -41,11 +41,13 @@ class CostModelManager {
 
   CostModel* FindOrCreateCostModel(const Graph* graph);
 
+  bool RemoveCostModelForGraph(const Graph* graph);
+
   Status AddToCostGraphDef(const Graph* graph, CostGraphDef* cost_graph);
 
  private:
   mutex mu_;
-  CostModelMap cost_models_ GUARDED_BY(mu_);
+  CostModelMap cost_models_ TF_GUARDED_BY(mu_);
 };
 
 }  // namespace tensorflow

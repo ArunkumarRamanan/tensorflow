@@ -15,6 +15,8 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
+#include "tensorflow/core/kernels/sparse_reorder_op.h"
+
 #include <algorithm>
 #include <numeric>
 #include <unordered_map>
@@ -30,7 +32,50 @@ limitations under the License.
 
 namespace tensorflow {
 
+using CPUDevice = Eigen::ThreadPoolDevice;
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+using GPUDevice = Eigen::GpuDevice;
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+namespace functor {
+
 template <typename T>
+struct SparseReorderFunctor<CPUDevice, T> {
+  void operator()(OpKernelContext* context, const Tensor& input_ind,
+                  const Tensor& input_val, const Tensor& input_shape_in) {
+    gtl::ArraySlice<int64> input_shape(input_shape_in.vec<int64>().data(),
+                                       input_shape_in.NumElements());
+
+    gtl::InlinedVector<int64, 8> std_order(input_shape.size());
+    std::iota(std_order.begin(), std_order.end(), 0);
+
+    // Check if the sparse tensor is already ordered correctly
+    sparse::SparseTensor input_sp;
+    OP_REQUIRES_OK(
+        context, sparse::SparseTensor::Create(input_ind, input_val, input_shape,
+                                              std_order, &input_sp));
+
+    if (input_sp.IndicesValid().ok()) {
+      context->set_output(0, input_sp.indices());
+      context->set_output(1, input_sp.values());
+    } else {
+      // Deep-copy the input Tensors, then reorder in-place
+      sparse::SparseTensor reordered_sp;
+      OP_REQUIRES_OK(context,
+                     sparse::SparseTensor::Create(tensor::DeepCopy(input_ind),
+                                                  tensor::DeepCopy(input_val),
+                                                  input_shape, &reordered_sp));
+      reordered_sp.Reorder<T>(std_order);
+      context->set_output(0, reordered_sp.indices());
+      context->set_output(1, reordered_sp.values());
+    }
+  }
+};
+
+}  // namespace functor
+
+template <typename Device, typename T>
 class SparseReorderOp : public OpKernel {
  public:
   explicit SparseReorderOp(OpKernelConstruction* context) : OpKernel(context) {}
@@ -54,34 +99,31 @@ class SparseReorderOp : public OpKernel {
                     "Input shape should be a vector but received shape ",
                     input_shape_in.shape().DebugString()));
 
-    const TensorShape input_shape(input_shape_in.vec<int64>());
-
-    gtl::InlinedVector<int64, 8> std_order(input_shape.dims());
-    std::iota(std_order.begin(), std_order.end(), 0);
-
-    // Check if the sparse tensor is already ordered correctly
-    sparse::SparseTensor input_sp(input_ind, input_val, input_shape, std_order);
-
-    if (input_sp.IndicesValid().ok()) {
-      context->set_output(0, input_sp.indices());
-      context->set_output(1, input_sp.values());
-    } else {
-      // Deep-copy the input Tensors, then reorder in-place
-      sparse::SparseTensor reordered_sp(tensor::DeepCopy(input_ind),
-                                        tensor::DeepCopy(input_val),
-                                        input_shape);
-      reordered_sp.Reorder<T>(std_order);
-      context->set_output(0, reordered_sp.indices());
-      context->set_output(1, reordered_sp.values());
-    }
+    functor::SparseReorderFunctor<Device, T>()(context, input_ind, input_val,
+                                               input_shape_in);
   }
 };
 
 #define REGISTER_KERNELS(type)                                            \
   REGISTER_KERNEL_BUILDER(                                                \
       Name("SparseReorder").Device(DEVICE_CPU).TypeConstraint<type>("T"), \
-      SparseReorderOp<type>)
+      SparseReorderOp<CPUDevice, type>)
 
 TF_CALL_ALL_TYPES(REGISTER_KERNELS);
 #undef REGISTER_KERNELS
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+#define REGISTER_GPU_KERNELS(type)                                        \
+  REGISTER_KERNEL_BUILDER(                                                \
+      Name("SparseReorder").Device(DEVICE_GPU).TypeConstraint<type>("T"), \
+      SparseReorderOp<GPUDevice, type>)
+
+TF_CALL_GPU_NUMBER_TYPES(REGISTER_GPU_KERNELS);
+TF_CALL_INTEGRAL_TYPES(REGISTER_GPU_KERNELS);
+REGISTER_GPU_KERNELS(bool);
+#undef REGISTER_GPU_KERNELS
+
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
 }  // namespace tensorflow

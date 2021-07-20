@@ -13,20 +13,104 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_LIB_MONITORING_COLLECTION_REGISTRY_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_LIB_MONITORING_COLLECTION_REGISTRY_H_
+#ifndef TENSORFLOW_CORE_LIB_MONITORING_COLLECTION_REGISTRY_H_
+#define TENSORFLOW_CORE_LIB_MONITORING_COLLECTION_REGISTRY_H_
 
+// clang-format off
+// Required for IS_MOBILE_PLATFORM
+#include "tensorflow/core/platform/platform.h"
+// clang-format on
+
+// We use a null implementation for mobile platforms.
+#ifdef IS_MOBILE_PLATFORM
+
+#include <functional>
 #include <map>
 #include <memory>
 
-#include "tensorflow/core/lib/core/stringpiece.h"
+#include "tensorflow/core/lib/monitoring/metric_def.h"
+#include "tensorflow/core/platform/macros.h"
+
+namespace tensorflow {
+namespace monitoring {
+
+// MetricCollector which has a null implementation.
+template <MetricKind metric_kind, typename Value, int NumLabels>
+class MetricCollector {
+ public:
+  ~MetricCollector() = default;
+
+  void CollectValue(const std::array<std::string, NumLabels>& labels,
+                    Value value) {}
+
+ private:
+  friend class MetricCollectorGetter;
+
+  MetricCollector() {}
+};
+
+// MetricCollectorGetter which has a null implementation.
+class MetricCollectorGetter {
+ public:
+  template <MetricKind metric_kind, typename Value, int NumLabels>
+  MetricCollector<metric_kind, Value, NumLabels> Get(
+      const MetricDef<metric_kind, Value, NumLabels>* const metric_def) {
+    return MetricCollector<metric_kind, Value, NumLabels>();
+  }
+
+ private:
+  MetricCollectorGetter() {}
+};
+
+// CollectionRegistry which has a null implementation.
+class CollectionRegistry {
+ public:
+  ~CollectionRegistry() = default;
+
+  static CollectionRegistry* Default() { return new CollectionRegistry(); }
+
+  using CollectionFunction = std::function<void(MetricCollectorGetter getter)>;
+
+  // RegistrationHandle which has a null implementation.
+  class RegistrationHandle {
+   public:
+    RegistrationHandle() {}
+
+    ~RegistrationHandle() {}
+  };
+
+  std::unique_ptr<RegistrationHandle> Register(
+      const AbstractMetricDef* metric_def,
+      const CollectionFunction& collection_function) {
+    return std::unique_ptr<RegistrationHandle>(new RegistrationHandle());
+  }
+
+ private:
+  CollectionRegistry() {}
+
+  TF_DISALLOW_COPY_AND_ASSIGN(CollectionRegistry);
+};
+
+}  // namespace monitoring
+}  // namespace tensorflow
+#else  // !defined(IS_MOBILE_PLATFORM)
+
+#include <functional>
+#include <map>
+#include <memory>
+#include <utility>
+
+#include "tensorflow/core/framework/summary.pb.h"
 #include "tensorflow/core/lib/monitoring/collected_metrics.h"
 #include "tensorflow/core/lib/monitoring/metric_def.h"
+#include "tensorflow/core/lib/monitoring/types.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/platform/stringpiece.h"
 #include "tensorflow/core/platform/thread_annotations.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace monitoring {
@@ -57,8 +141,8 @@ class MetricCollector {
   ~MetricCollector() = default;
 
   // Collects the value with these labels.
-  void CollectValue(const std::array<string, NumLabels>& labels,
-                    const Value& value);
+  void CollectValue(const std::array<std::string, NumLabels>& labels,
+                    Value value);
 
  private:
   friend class internal::Collector;
@@ -71,7 +155,7 @@ class MetricCollector {
         registration_time_millis_(registration_time_millis),
         collector_(collector),
         point_set_(point_set) {
-    point_set_->metric_name = metric_def->name().ToString();
+    point_set_->metric_name = std::string(metric_def->name());
   }
 
   const MetricDef<metric_kind, Value, NumLabels>* const metric_def_;
@@ -150,7 +234,7 @@ class CollectionRegistry {
   std::unique_ptr<RegistrationHandle> Register(
       const AbstractMetricDef* metric_def,
       const CollectionFunction& collection_function)
-      LOCKS_EXCLUDED(mu_) TF_MUST_USE_RESULT;
+      TF_LOCKS_EXCLUDED(mu_) TF_MUST_USE_RESULT;
 
   // Options for collecting metrics.
   struct CollectMetricsOptions {
@@ -166,12 +250,12 @@ class CollectionRegistry {
   friend class test_util::CollectionRegistryTestAccess;
   friend class internal::Collector;
 
-  CollectionRegistry(Env* env);
+  explicit CollectionRegistry(Env* env);
 
   // Unregisters the metric from this registry. This is private because the
   // public interface provides a Registration handle which automatically calls
   // this upon destruction.
-  void Unregister(const AbstractMetricDef* metric_def) LOCKS_EXCLUDED(mu_);
+  void Unregister(const AbstractMetricDef* metric_def) TF_LOCKS_EXCLUDED(mu_);
 
   // TF environment, mainly used for timestamping.
   Env* const env_;
@@ -184,7 +268,7 @@ class CollectionRegistry {
     CollectionFunction collection_function;
     uint64 registration_time_millis;
   };
-  std::map<StringPiece, CollectionInfo> registry_ GUARDED_BY(mu_);
+  std::map<StringPiece, CollectionInfo> registry_ TF_GUARDED_BY(mu_);
 
   TF_DISALLOW_COPY_AND_ASSIGN(CollectionRegistry);
 };
@@ -209,12 +293,57 @@ class CollectionRegistry::RegistrationHandle {
 namespace internal {
 
 template <typename Value>
-void CollectValue(const Value& value, Point* point);
+void CollectValue(Value value, Point* point);
 
 template <>
-inline void CollectValue(const int64& value, Point* const point) {
+inline void CollectValue(int64 value, Point* const point) {
   point->value_type = ValueType::kInt64;
   point->int64_value = value;
+}
+
+template <>
+inline void CollectValue(std::function<int64()> value_fn, Point* const point) {
+  point->value_type = ValueType::kInt64;
+  point->int64_value = value_fn();
+}
+
+template <>
+inline void CollectValue(std::string value, Point* const point) {
+  point->value_type = ValueType::kString;
+  point->string_value = std::move(value);
+}
+
+template <>
+inline void CollectValue(std::function<std::string()> value_fn,
+                         Point* const point) {
+  point->value_type = ValueType::kString;
+  point->string_value = value_fn();
+}
+
+template <>
+inline void CollectValue(bool value, Point* const point) {
+  point->value_type = ValueType::kBool;
+  point->bool_value = value;
+}
+
+template <>
+inline void CollectValue(std::function<bool()> value_fn, Point* const point) {
+  point->value_type = ValueType::kBool;
+  point->bool_value = value_fn();
+}
+
+template <>
+inline void CollectValue(HistogramProto value, Point* const point) {
+  point->value_type = ValueType::kHistogram;
+  // This is inefficient. If and when we hit snags, we can change the API to do
+  // this more efficiently.
+  point->histogram_value = std::move(value);
+}
+
+template <>
+inline void CollectValue(Percentiles value, Point* const point) {
+  point->value_type = ValueType::kPercentiles;
+  point->percentiles_value = std::move(value);
 }
 
 // Used by the CollectionRegistry class to collect all the values of all the
@@ -228,7 +357,7 @@ inline void CollectValue(const int64& value, Point* const point) {
 // This class is thread-safe.
 class Collector {
  public:
-  Collector(const uint64 collection_time_millis)
+  explicit Collector(const uint64 collection_time_millis)
       : collected_metrics_(new CollectedMetrics()),
         collection_time_millis_(collection_time_millis) {}
 
@@ -236,11 +365,11 @@ class Collector {
   MetricCollector<metric_kind, Value, NumLabels> GetMetricCollector(
       const MetricDef<metric_kind, Value, NumLabels>* const metric_def,
       const uint64 registration_time_millis,
-      internal::Collector* const collector) LOCKS_EXCLUDED(mu_) {
+      internal::Collector* const collector) TF_LOCKS_EXCLUDED(mu_) {
     auto* const point_set = [&]() {
       mutex_lock l(mu_);
       return collected_metrics_->point_set_map
-          .insert(std::make_pair(metric_def->name().ToString(),
+          .insert(std::make_pair(std::string(metric_def->name()),
                                  std::unique_ptr<PointSet>(new PointSet())))
           .first->second.get();
     }();
@@ -251,17 +380,17 @@ class Collector {
   uint64 collection_time_millis() const { return collection_time_millis_; }
 
   void CollectMetricDescriptor(const AbstractMetricDef* const metric_def)
-      LOCKS_EXCLUDED(mu_);
+      TF_LOCKS_EXCLUDED(mu_);
 
   void CollectMetricValues(
       const CollectionRegistry::CollectionInfo& collection_info);
 
   std::unique_ptr<CollectedMetrics> ConsumeCollectedMetrics()
-      LOCKS_EXCLUDED(mu_);
+      TF_LOCKS_EXCLUDED(mu_);
 
  private:
   mutable mutex mu_;
-  std::unique_ptr<CollectedMetrics> collected_metrics_ GUARDED_BY(mu_);
+  std::unique_ptr<CollectedMetrics> collected_metrics_ TF_GUARDED_BY(mu_);
   const uint64 collection_time_millis_;
 
   TF_DISALLOW_COPY_AND_ASSIGN(Collector);
@@ -303,19 +432,19 @@ inline void WriteTimestamps<MetricKind::kCumulative>(
 
 template <MetricKind metric_kind, typename Value, int NumLabels>
 void MetricCollector<metric_kind, Value, NumLabels>::CollectValue(
-    const std::array<string, NumLabels>& labels, const Value& value) {
+    const std::array<std::string, NumLabels>& labels, Value value) {
   point_set_->points.emplace_back(new Point());
   auto* const point = point_set_->points.back().get();
-  const std::vector<StringPiece> label_descriptions =
+  const std::vector<std::string> label_descriptions =
       metric_def_->label_descriptions();
   point->labels.reserve(NumLabels);
   for (int i = 0; i < NumLabels; ++i) {
     point->labels.push_back({});
     auto* const label = &point->labels.back();
-    label->name = label_descriptions[i].ToString();
+    label->name = label_descriptions[i];
     label->value = labels[i];
   }
-  internal::CollectValue(value, point);
+  internal::CollectValue(std::move(value), point);
   internal::WriteTimestamps<metric_kind>(
       registration_time_millis_, collector_->collection_time_millis(), point);
 }
@@ -332,7 +461,39 @@ MetricCollector<metric_kind, Value, NumLabels> MetricCollectorGetter::Get(
                                         collector_);
 }
 
+class Exporter {
+ public:
+  virtual ~Exporter() {}
+  virtual void PeriodicallyExportMetrics() = 0;
+  virtual void ExportMetrics() = 0;
+};
+
+namespace exporter_registration {
+
+class ExporterRegistration {
+ public:
+  explicit ExporterRegistration(Exporter* exporter) : exporter_(exporter) {
+    exporter_->PeriodicallyExportMetrics();
+  }
+
+ private:
+  Exporter* exporter_;
+};
+
+}  // namespace exporter_registration
+
+#define REGISTER_TF_METRICS_EXPORTER(exporter) \
+  REGISTER_TF_METRICS_EXPORTER_UNIQ_HELPER(__COUNTER__, exporter)
+
+#define REGISTER_TF_METRICS_EXPORTER_UNIQ_HELPER(ctr, exporter) \
+  REGISTER_TF_METRICS_EXPORTER_UNIQ(ctr, exporter)
+
+#define REGISTER_TF_METRICS_EXPORTER_UNIQ(ctr, exporter)                       \
+  static ::tensorflow::monitoring::exporter_registration::ExporterRegistration \
+      exporter_registration_##ctr(new exporter())
+
 }  // namespace monitoring
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_LIB_MONITORING_COLLECTION_REGISTRY_H_
+#endif  // IS_MOBILE_PLATFORM
+#endif  // TENSORFLOW_CORE_LIB_MONITORING_COLLECTION_REGISTRY_H_

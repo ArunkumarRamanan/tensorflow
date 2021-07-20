@@ -16,11 +16,17 @@ limitations under the License.
 #include "tensorflow/core/kernels/cwise_ops_common.h"
 
 namespace tensorflow {
-REGISTER8(BinaryOp, CPU, "Less", functor::less, float, Eigen::half, double,
-          int32, int64, uint8, int8, int16);
-#if GOOGLE_CUDA
-REGISTER7(BinaryOp, GPU, "Less", functor::less, float, Eigen::half, double,
-          int64, uint8, int8, int16);
+REGISTER5(BinaryOp, CPU, "Less", functor::less, float, Eigen::half, double,
+          bfloat16, int32);
+REGISTER7(BinaryOp, CPU, "Less", functor::less, uint8, uint16, uint32, uint64,
+          int8, int16, int64);
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
+REGISTER9(BinaryOp, GPU, "Less", functor::less, float, Eigen::half, double,
+          int64, uint8, uint16, uint32, uint64, int8);
+REGISTER(BinaryOp, GPU, "Less", functor::less, int16);
+#endif
 
 // A special GPU kernel for int32.
 // TODO(b/25387198): Also enable int32 in device memory. This kernel
@@ -33,5 +39,11 @@ REGISTER_KERNEL_BUILDER(Name("Less")
                             .TypeConstraint<int32>("T"),
                         BinaryOp<CPUDevice, functor::less<int32>>);
 #endif
-
+REGISTER_KERNEL_BUILDER(Name("Less")
+                            .Device(DEVICE_DEFAULT)
+                            .HostMemory("x")
+                            .HostMemory("y")
+                            .HostMemory("z")
+                            .TypeConstraint<int32>("T"),
+                        BinaryOp<CPUDevice, functor::less<int32>>);
 }  // namespace tensorflow

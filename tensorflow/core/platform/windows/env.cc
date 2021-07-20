@@ -20,29 +20,51 @@ limitations under the License.
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
-#undef LoadLibrary
 #undef ERROR
 
+#include <string>
 #include <thread>
 #include <vector>
 
-#include "tensorflow/core/lib/core/error_codes.pb.h"
 #include "tensorflow/core/platform/load_library.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/ram_file_system.h"
+#include "tensorflow/core/platform/windows/wide_char.h"
 #include "tensorflow/core/platform/windows/windows_file_system.h"
+#include "tensorflow/core/protobuf/error_codes.pb.h"
+
+#pragma comment(lib, "Shlwapi.lib")
 
 namespace tensorflow {
 
 namespace {
 
+mutex name_mutex(tensorflow::LINKER_INITIALIZED);
+
+std::map<std::thread::id, string>& GetThreadNameRegistry()
+    TF_EXCLUSIVE_LOCKS_REQUIRED(name_mutex) {
+  static auto* thread_name_registry = new std::map<std::thread::id, string>();
+  return *thread_name_registry;
+}
+
 class StdThread : public Thread {
  public:
-  // name and thread_options are both ignored.
+  // thread_options is ignored.
   StdThread(const ThreadOptions& thread_options, const string& name,
             std::function<void()> fn)
-      : thread_(fn) {}
-  ~StdThread() { thread_.join(); }
+      : thread_(fn) {
+    mutex_lock l(name_mutex);
+    GetThreadNameRegistry().emplace(thread_.get_id(), name);
+  }
+
+  ~StdThread() override {
+    std::thread::id thread_id = thread_.get_id();
+    thread_.join();
+    mutex_lock l(name_mutex);
+    GetThreadNameRegistry().erase(thread_id);
+  }
 
  private:
   std::thread thread_;
@@ -50,21 +72,27 @@ class StdThread : public Thread {
 
 class WindowsEnv : public Env {
  public:
-  WindowsEnv() {}
+  WindowsEnv() : GetSystemTimePreciseAsFileTime_(NULL) {
+    // GetSystemTimePreciseAsFileTime function is only available in the latest
+    // versions of Windows. For that reason, we try to look it up in
+    // kernel32.dll at runtime and use an alternative option if the function
+    // is not available.
+    HMODULE module = GetModuleHandleW(L"kernel32.dll");
+    if (module != NULL) {
+      auto func = (FnGetSystemTimePreciseAsFileTime)GetProcAddress(
+          module, "GetSystemTimePreciseAsFileTime");
+      GetSystemTimePreciseAsFileTime_ = func;
+    }
+  }
+
   ~WindowsEnv() override {
     LOG(FATAL) << "Env::Default() must not be destroyed";
   }
 
   bool MatchPath(const string& path, const string& pattern) override {
-    return PathMatchSpec(path.c_str(), pattern.c_str()) == S_OK;
-  }
-
-  uint64 NowMicros() override {
-    FILETIME temp;
-    GetSystemTimeAsFileTime(&temp);
-    uint64 now_ticks =
-        (uint64)temp.dwLowDateTime + ((uint64)(temp.dwHighDateTime) << 32LL);
-    return now_ticks / 10LL;
+    std::wstring ws_path(Utf8ToWideChar(path));
+    std::wstring ws_pattern(Utf8ToWideChar(pattern));
+    return PathMatchSpecW(ws_path.c_str(), ws_pattern.c_str()) == TRUE;
   }
 
   void SleepForMicroseconds(int64 micros) override { Sleep(micros / 1000); }
@@ -74,40 +102,131 @@ class WindowsEnv : public Env {
     return new StdThread(thread_options, name, fn);
   }
 
+  int32 GetCurrentThreadId() override {
+    return static_cast<int32>(::GetCurrentThreadId());
+  }
+
+  bool GetCurrentThreadName(string* name) override {
+    mutex_lock l(name_mutex);
+    auto thread_name = GetThreadNameRegistry().find(std::this_thread::get_id());
+    if (thread_name != GetThreadNameRegistry().end()) {
+      *name = thread_name->second;
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  static VOID CALLBACK SchedClosureCallback(PTP_CALLBACK_INSTANCE Instance,
+                                            PVOID Context, PTP_WORK Work) {
+    CloseThreadpoolWork(Work);
+    std::function<void()>* f = (std::function<void()>*)Context;
+    (*f)();
+    delete f;
+  }
   void SchedClosure(std::function<void()> closure) override {
-    // TODO(b/27290852): Spawning a new thread here is wasteful, but
-    // needed to deal with the fact that many `closure` functions are
-    // blocking in the current codebase.
-    std::thread closure_thread(closure);
-    closure_thread.detach();
+    PTP_WORK work = CreateThreadpoolWork(
+        SchedClosureCallback, new std::function<void()>(std::move(closure)),
+        nullptr);
+    SubmitThreadpoolWork(work);
+  }
+
+  static VOID CALLBACK SchedClosureAfterCallback(PTP_CALLBACK_INSTANCE Instance,
+                                                 PVOID Context,
+                                                 PTP_TIMER Timer) {
+    CloseThreadpoolTimer(Timer);
+    std::function<void()>* f = (std::function<void()>*)Context;
+    (*f)();
+    delete f;
   }
 
   void SchedClosureAfter(int64 micros, std::function<void()> closure) override {
-    // TODO(b/27290852): Consuming a thread here is wasteful, but this
-    // code is (currently) only used in the case where a step fails
-    // (AbortStep). This could be replaced by a timer thread
-    SchedClosure([this, micros, closure]() {
-      SleepForMicroseconds(micros);
-      closure();
-    });
+    PTP_TIMER timer = CreateThreadpoolTimer(
+        SchedClosureAfterCallback,
+        new std::function<void()>(std::move(closure)), nullptr);
+    // in 100 nanosecond units
+    FILETIME FileDueTime;
+    ULARGE_INTEGER ulDueTime;
+    // Negative indicates the amount of time to wait is relative to the current
+    // time.
+    ulDueTime.QuadPart = (ULONGLONG) - (10 * micros);
+    FileDueTime.dwHighDateTime = ulDueTime.HighPart;
+    FileDueTime.dwLowDateTime = ulDueTime.LowPart;
+    SetThreadpoolTimer(timer, &FileDueTime, 0, 0);
   }
 
-  Status LoadLibrary(const char* library_filename, void** handle) override {
-    return errors::Unimplemented("WindowsEnv::LoadLibrary");
+  Status LoadDynamicLibrary(const char* library_filename,
+                            void** handle) override {
+    return tensorflow::internal::LoadDynamicLibrary(library_filename, handle);
   }
 
   Status GetSymbolFromLibrary(void* handle, const char* symbol_name,
                               void** symbol) override {
-    return errors::Unimplemented("WindowsEnv::GetSymbolFromLibrary");
+    return tensorflow::internal::GetSymbolFromLibrary(handle, symbol_name,
+                                                      symbol);
   }
+
+  string FormatLibraryFileName(const string& name,
+                               const string& version) override {
+    return tensorflow::internal::FormatLibraryFileName(name, version);
+  }
+
+  string GetRunfilesDir() override {
+    string bin_path = this->GetExecutablePath();
+    string runfiles_path = bin_path + ".runfiles\\org_tensorflow";
+    Status s = this->IsDirectory(runfiles_path);
+    if (s.ok()) {
+      return runfiles_path;
+    } else {
+      return bin_path.substr(0, bin_path.find_last_of("/\\"));
+    }
+  }
+
+ private:
+  void GetLocalTempDirectories(std::vector<string>* list) override;
+
+  typedef VOID(WINAPI* FnGetSystemTimePreciseAsFileTime)(LPFILETIME);
+  FnGetSystemTimePreciseAsFileTime GetSystemTimePreciseAsFileTime_;
 };
 
 }  // namespace
 
 REGISTER_FILE_SYSTEM("", WindowsFileSystem);
+REGISTER_FILE_SYSTEM("file", LocalWinFileSystem);
+REGISTER_FILE_SYSTEM("ram", RamFileSystem);
+
 Env* Env::Default() {
   static Env* default_env = new WindowsEnv;
   return default_env;
 }
+
+void WindowsEnv::GetLocalTempDirectories(std::vector<string>* list) {
+  list->clear();
+  // On windows we'll try to find a directory in this order:
+  //   C:/Documents & Settings/whomever/TEMP (or whatever GetTempPath() is)
+  //   C:/TMP/
+  //   C:/TEMP/
+  //   C:/WINDOWS/ or C:/WINNT/
+  //   .
+  char tmp[MAX_PATH];
+  // GetTempPath can fail with either 0 or with a space requirement > bufsize.
+  // See http://msdn.microsoft.com/en-us/library/aa364992(v=vs.85).aspx
+  DWORD n = GetTempPathA(MAX_PATH, tmp);
+  if (n > 0 && n <= MAX_PATH) list->push_back(tmp);
+  list->push_back("C:\\tmp\\");
+  list->push_back("C:\\temp\\");
+}
+
+int setenv(const char* name, const char* value, int overwrite) {
+  if (!overwrite) {
+    char* env_val = getenv(name);
+    if (env_val) {
+      return 0;
+    }
+  }
+  return _putenv_s(name, value);
+}
+
+int unsetenv(const char* name) { return _putenv_s(name, ""); }
 
 }  // namespace tensorflow

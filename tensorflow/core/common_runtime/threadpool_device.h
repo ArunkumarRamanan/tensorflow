@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMMON_RUNTIME_THREADPOOL_DEVICE_H_
-#define TENSORFLOW_COMMON_RUNTIME_THREADPOOL_DEVICE_H_
+#ifndef TENSORFLOW_CORE_COMMON_RUNTIME_THREADPOOL_DEVICE_H_
+#define TENSORFLOW_CORE_COMMON_RUNTIME_THREADPOOL_DEVICE_H_
 
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/local_device.h"
@@ -25,22 +25,37 @@ namespace tensorflow {
 class ThreadPoolDevice : public LocalDevice {
  public:
   ThreadPoolDevice(const SessionOptions& options, const string& name,
-                   Bytes memory_limit, BusAdjacency bus_adjacency,
+                   Bytes memory_limit, const DeviceLocality& locality,
                    Allocator* allocator);
   ~ThreadPoolDevice() override;
 
-  void Compute(OpKernel* op_kernel, OpKernelContext* context) override;
   Allocator* GetAllocator(AllocatorAttributes attr) override;
+  Allocator* GetScopedAllocator(AllocatorAttributes attr,
+                                int64_t step_id) override;
+  ScopedAllocatorMgr* GetScopedAllocatorMgr() const override {
+    return scoped_allocator_mgr_.get();
+  }
   Status MakeTensorFromProto(const TensorProto& tensor_proto,
                              const AllocatorAttributes alloc_attrs,
                              Tensor* tensor) override;
+  void CopyTensorInSameDevice(const Tensor* input_tensor, Tensor* output_tensor,
+                              const DeviceContext* device_context,
+                              StatusCallback done) override;
 
   Status Sync() override { return Status::OK(); }
 
+  void Compute(OpKernel* op_kernel, OpKernelContext* context) override;
+  void ComputeAsync(AsyncOpKernel* op_kernel, OpKernelContext* context,
+                    AsyncOpKernel::DoneCallback done) override;
+
  private:
+  void LogInputs(OpKernel* op_kernel, OpKernelContext* context);
+  void LogOutputs(OpKernel* op_kernel, OpKernelContext* context);
+
   Allocator* allocator_;  // Not owned
+  std::unique_ptr<ScopedAllocatorMgr> scoped_allocator_mgr_;
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_COMMON_RUNTIME_THREADPOOL_DEVICE_H_
+#endif  // TENSORFLOW_CORE_COMMON_RUNTIME_THREADPOOL_DEVICE_H_

@@ -1,41 +1,42 @@
-# TensorFlow Go API
+# TensorFlow in Go
 
 Construct and execute TensorFlow graphs in Go.
 
 [![GoDoc](https://godoc.org/github.com/tensorflow/tensorflow/tensorflow/go?status.svg)](https://godoc.org/github.com/tensorflow/tensorflow/tensorflow/go)
 
 > *WARNING*: The API defined in this package is not stable and can change
-> without notice. The same goes for the awkward package path
+> without notice. The same goes for the package path:
 > (`github.com/tensorflow/tensorflow/tensorflow/go`).
 
-## Requirements
+## Building the TensorFlow C library from source
 
--   Go version 1.7+
--   [bazel](https://www.bazel.io/versions/master/docs/install.html)
+If the "Quickstart" instructions above do not work (perhaps the release archives
+are not available for your operating system or architecture, or you're using a
+different version of CUDA/cuDNN), then the TensorFlow C library must be built
+from source.
+
+### Prerequisites
+
+-   [bazel](https://www.bazel.build/versions/master/docs/install.html)
 -   Environment to build TensorFlow from source code
-    ([Linux](https://www.tensorflow.org/versions/master/get_started/os_setup.html#prepare-environment-for-linux)
-    or [Mac OS
-    X](https://www.tensorflow.org/versions/master/get_started/os_setup.html#prepare-environment-for-mac-os-x)).
-    If you'd like to skip reading those details and do not care about GPU
-    support, try the following:
+    ([Linux or macOS](https://www.tensorflow.org/install/source)). If you don't
+    need GPU support, then try the following:
 
     ```sh
-    # On Linux
-    sudo apt-get install python swig python-numpy
-
-    # On Mac OS X with homebrew
-    brew install swig
+    sudo apt-get install python swig python-numpy # Linux
+    brew install swig                             # OS X with homebrew
     ```
+- [Protocol buffer compiler (protoc) 3.x](https://github.com/google/protobuf/releases/)
 
-## Installation
+### Build
 
-1.  Download the TensorFlow source code:
+1.  Download the source code
 
     ```sh
     go get -d github.com/tensorflow/tensorflow/tensorflow/go
     ```
 
-2.  Build the TensorFlow library (`libtensorflow.so`):
+2.  Build the TensorFlow C library:
 
     ```sh
     cd ${GOPATH}/src/github.com/tensorflow/tensorflow
@@ -45,36 +46,54 @@ Construct and execute TensorFlow graphs in Go.
 
     This can take a while (tens of minutes, more if also building for GPU).
 
-3.  Make `libtensorflow.so` available to the linker. This can be done by either:
+3.  Make `libtensorflow.so` and `libtensorflow_framework.so` available to the
+    linker. This can be done by either:
 
     a. Copying it to a system location, e.g.,
 
     ```sh
-    cp ${GOPATH}/src/github.com/tensorflow/tensorflow/bazel-bin/tensorflow/libtensorflow.so /usr/local/lib
+    sudo cp ${GOPATH}/src/github.com/tensorflow/tensorflow/bazel-bin/tensorflow/libtensorflow.so /usr/local/lib
+    sudo cp ${GOPATH}/src/github.com/tensorflow/tensorflow/bazel-bin/tensorflow/libtensorflow_framework.so /usr/local/lib
     ```
 
     OR
 
-    b. Setting the
-    `LD_LIBRARY_PATH=${GOPATH}/src/github.com/tensorflow/tensorflow/bazel-bin/tensorflow`
-    environment variable (`DYLD_LIBRARY_PATH` on Mac OS X).
+    b. Setting environment variables:
 
-4.  Generate wrapper functions for TensorFlow ops:
+    ```sh
+    export LIBRARY_PATH=${GOPATH}/src/github.com/tensorflow/tensorflow/bazel-bin/tensorflow
+    # Linux
+    export LD_LIBRARY_PATH=${GOPATH}/src/github.com/tensorflow/tensorflow/bazel-bin/tensorflow
+    # OS X
+    export DYLD_LIBRARY_PATH=${GOPATH}/src/github.com/tensorflow/tensorflow/bazel-bin/tensorflow
+    ```
+
+4.  Build and test:
 
     ```sh
     go generate github.com/tensorflow/tensorflow/tensorflow/go/op
+    go test github.com/tensorflow/tensorflow/tensorflow/go
     ```
 
-After this, the `go` tool should be usable as normal. For example:
+### Generate wrapper functions for ops
+
+Go functions corresponding to TensorFlow operations are generated in `op/wrappers.go`. To regenerate them:
+
+Prerequisites:
+- [Protocol buffer compiler (protoc) 3.x](https://github.com/google/protobuf/releases/)
+- The TensorFlow repository under GOPATH
 
 ```sh
-go test -v github.com/tensorflow/tensorflow/tensorflow/go
+go generate github.com/tensorflow/tensorflow/tensorflow/go/op
 ```
+
+## Support
+
+Use [Stack Overflow](http://stackoverflow.com/questions/tagged/tensorflow)
+and/or [GitHub issues](https://github.com/tensorflow/tensorflow/issues).
 
 ## Contributions
 
-This API has been built on top of the [C
-API](https://www.tensorflow.org/code/tensorflow/c/c_api.h),
-which is intended for building language bindings for TensorFlow functionality.
-However, this is far from complete. Contributions are welcome. To monitor
-progress follow [issue 10](https://github.com/tensorflow/tensorflow/issues/10).
+Contributions are welcome. If making any signification changes, probably best to
+discuss on a [GitHub issue](https://github.com/tensorflow/tensorflow/issues)
+before investing too much time. GitHub pull requests are used for contributions.

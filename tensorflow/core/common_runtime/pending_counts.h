@@ -1,5 +1,5 @@
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_COMMON_RUNTIME_PENDING_COUNTS_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_COMMON_RUNTIME_PENDING_COUNTS_H_
+#ifndef TENSORFLOW_CORE_COMMON_RUNTIME_PENDING_COUNTS_H_
+#define TENSORFLOW_CORE_COMMON_RUNTIME_PENDING_COUNTS_H_
 
 /* Copyright 2015 The TensorFlow Authors. All Rights Reserved.
 
@@ -16,15 +16,37 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <unordered_map>
+#include <atomic>
+
+#include "tensorflow/core/lib/gtl/flatmap.h"
+#include "tensorflow/core/lib/hash/hash.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/util/port.h"
 
 namespace tensorflow {
 
-// An internal helper class to keep track of pending and dead counts for nodes,
-// for use in the ExecutorState module.
+// PendingCounts is an internal helper class to keep track of pending and
+// dead counts for nodes, for use in the ExecutorState module.  It
+// holds a map from Handles to various counts for that handle.  This
+// information is needed per frame iteration. The amount of memory
+// needed for an iteration is the same across all executions of the
+// iteration. The memory amount and handles are precomputed at startup
+// using a Layout object.
+//
+//    PendingCounts::Layout layout;
+//    std::vector<PendingCounts::Handle> h(C);
+//    for (int id = 0; id < C; id++) {
+//      h[id] = r.AddHandle(max_pending[id], max_dead[id]);
+//    }
+//
+// When we actually want to start an iteration we first create a
+// PendingCounts object and then index into it using the precomputed
+// handles:
+
+//    PendingCounts counts(layout);
+//    ...
+//    counts.decrement_pending(h[id], 1);
 class PendingCounts {
  public:
   // The state machine for a node's execution.
@@ -40,78 +62,114 @@ class PendingCounts {
     COMPLETED
   };
 
-  explicit PendingCounts(int num_nodes)
-      : num_nodes_(num_nodes), counts_(new PackedCounts[num_nodes]) {}
+  // An opaque handle indicating where in the PendingCounts data structure
+  // the appropriate count information can be found.
+  class Handle;
+  // Given a node that needs to represent counts no larger than the
+  // specified "max_pending_count" and "max_dead_count", create a
+  // handle that can be passed to various PendingCounts routines
+  // to retrieve the count data for this node.
+  class Layout {
+   public:
+    Handle CreateHandle(size_t max_pending_count, size_t max_dead_count);
 
-  ~PendingCounts() { delete[] counts_; }
+   private:
+    friend class PendingCounts;
+    int next_offset_ = 0;  // Next byte offset to allocate
+  };
 
-  void set_initial_count(int id, int pending_count, int max_dead_count) {
-    DCHECK_GE(id, 0);
-    DCHECK_LT(id, num_nodes_);
-    if ((pending_count > kMaxCountForPackedCounts) ||
-        (max_dead_count > kMaxCountForPackedCounts)) {
-      // A value for which we have to use the large representation
-      DCHECK(overflow_.count(id) == 0);
-      LargeCounts c;
+  // Create a new PendingCounts object that can hold the state of
+  // all the Handles allocated from "final_allocator".
+  explicit PendingCounts(Layout layout)
+      : num_bytes_(layout.next_offset_), bytes_(new char[num_bytes_]) {
+    if (num_bytes_ >= sizeof(LargeCounts)) {
+      CHECK_EQ(uintptr_t(bytes_) % alignof(LargeCounts), 0);
+    }
+  }
+
+  // Create a new PendingCounts object with the same layout and counts
+  // as "other".
+  explicit PendingCounts(const PendingCounts& other)
+      : num_bytes_(other.num_bytes_), bytes_(new char[num_bytes_]) {
+    if (num_bytes_ >= sizeof(LargeCounts)) {
+      CHECK_EQ(uintptr_t(bytes_) % alignof(LargeCounts), 0);
+    }
+    memcpy(bytes_, other.bytes_, other.num_bytes_);
+  }
+
+  ~PendingCounts() { delete[] bytes_; }
+
+  void set_initial_count(Handle h, size_t pending_count) {
+    if (h.is_large_) {
+      std::atomic<LargeCounts>* c_ptr = Large(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
       c.pending = pending_count;
       c.dead_count = 0;
-      overflow_[id] = c;
-      PackedCounts pc;
-      pc.pending = 0;
-      pc.dead_count = 0;
-      pc.is_large = 1;
-      counts_[id] = pc;
+      c.has_started = 0;
+      c_ptr->store(c, std::memory_order_relaxed);
     } else {
-      PackedCounts pc;
-      pc.pending = pending_count;
-      pc.dead_count = 0;
-      pc.has_started = 0;
-      pc.is_large = 0;
-      counts_[id] = pc;
+      DCHECK_LE(pending_count, kMaxCountForPackedCounts);
+      std::atomic<PackedCounts>* c_ptr = Packed(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
+      c.pending = pending_count;
+      c.dead_count = 0;
+      c.has_started = 0;
+      c_ptr->store(c, std::memory_order_relaxed);
     }
   }
 
-  NodeState node_state(int id) {
-    if (IsLarge(id)) {
-      return NodeStateLarge(id);
+  NodeState node_state(Handle h) {
+    if (h.is_large_) {
+      return NodeStateForStruct(Large(h)->load(std::memory_order_relaxed));
     } else {
-      return NodeStatePacked(id);
+      return NodeStateForStruct(Packed(h)->load(std::memory_order_relaxed));
     }
   }
-  void mark_started(int id) {
-    if (IsLarge(id)) {
-      auto& pending = overflow_[id].pending;
-      DCHECK_EQ(pending, 0);
-      pending = -1;
+  void mark_started(Handle h) {
+    DCHECK_EQ(pending(h), 0);
+    if (h.is_large_) {
+      std::atomic<LargeCounts>* c_ptr = Large(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
+      DCHECK_EQ(c.has_started, 0);
+      c.has_started = 1;
+      c_ptr->store(c, std::memory_order_relaxed);
     } else {
-      DCHECK_EQ(counts_[id].pending, 0);
-      DCHECK_EQ(counts_[id].has_started, 0);
-      counts_[id].has_started = 1;
+      std::atomic<PackedCounts>* c_ptr = Packed(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
+      DCHECK_EQ(c.has_started, 0);
+      c.has_started = 1;
+      c_ptr->store(c, std::memory_order_relaxed);
     }
   }
-  void mark_completed(int id) {
-    if (IsLarge(id)) {
-      auto& pending = overflow_[id].pending;
-      DCHECK_EQ(pending, -1);
-      pending = -2;
+  void mark_completed(Handle h) {
+    if (h.is_large_) {
+      std::atomic<LargeCounts>* c_ptr = Large(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
+      DCHECK_EQ(c.has_started, 1);
+      c.pending = 1;
+      c_ptr->store(c, std::memory_order_relaxed);
     } else {
-      DCHECK_EQ(counts_[id].pending, 0);
-      DCHECK_EQ(counts_[id].has_started, 1);
-      counts_[id].pending = 1;
+      std::atomic<PackedCounts>* c_ptr = Packed(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
+      DCHECK_EQ(c.has_started, 1);
+      c.pending = 1;
+      c_ptr->store(c, std::memory_order_relaxed);
     }
   }
-  int pending(int id) {
-    if (IsLarge(id)) {
-      if (PENDING_NOTREADY == NodeStateLarge(id)) {
-        return overflow_[id].pending;
+  int pending(Handle h) {
+    if (h.is_large_) {
+      LargeCounts c = Large(h)->load(std::memory_order_relaxed);
+      if (PENDING_NOTREADY == NodeStateForStruct(c)) {
+        return c.pending;
       } else {
         // The pending count encodes the state once the node has
         // started, so just return 0.
         return 0;
       }
     } else {
-      if (PENDING_NOTREADY == NodeStatePacked(id)) {
-        return counts_[id].pending;
+      PackedCounts c = Packed(h)->load(std::memory_order_relaxed);
+      if (PENDING_NOTREADY == NodeStateForStruct(c)) {
+        return c.pending;
       } else {
         // The pending count encodes the state once the node has
         // started, so just return 0.
@@ -119,64 +177,142 @@ class PendingCounts {
       }
     }
   }
-  int decrement_pending(int id, int v) {
-    DCHECK_GE(pending(id), v);
-    if (IsLarge(id)) {
-      int* p = &(overflow_[id].pending);
-      (*p) -= v;
-      return *p;
+  int decrement_pending(Handle h, int v) {
+    DCHECK_GE(pending(h), v);
+    if (h.is_large_) {
+      std::atomic<LargeCounts>* c_ptr = Large(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
+      c.pending -= v;
+      c_ptr->store(c, std::memory_order_relaxed);
+      return c.pending;
     } else {
-      counts_[id].pending -= v;
-      return counts_[id].pending;
+      std::atomic<PackedCounts>* c_ptr = Packed(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
+      c.pending -= v;
+      c_ptr->store(c, std::memory_order_relaxed);
+      return c.pending;
     }
   }
   // Mark a merge node as live
-  // REQUIRES: Node corresponding to "id" is a merge node
-  void mark_live(int id) {
-    if (IsLarge(id)) {
-      int& count = overflow_[id].pending;
+  // REQUIRES: Node corresponding to "h" is a merge node
+  void mark_live(Handle h) {
+    if (h.is_large_) {
+      std::atomic<LargeCounts>* c_ptr = Large(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
       // Only do anything if the node hasn't already started executing.
-      if (PENDING_NOTREADY == NodeStateLarge(id)) {
-        count &= ~static_cast<int>(0x1);
+      if (PENDING_NOTREADY == NodeStateForStruct(c)) {
+        c.pending &= ~static_cast<int>(0x1);
+        c_ptr->store(c, std::memory_order_relaxed);
       }
     } else {
+      std::atomic<PackedCounts>* c_ptr = Packed(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
       // Only do anything if the node hasn't already started executing.
-      if (PENDING_NOTREADY == NodeStatePacked(id)) {
+      if (PENDING_NOTREADY == NodeStateForStruct(c)) {
         static_assert(7 == kMaxCountForPackedCounts,
                       "Live flag incorrect for max packed count");
-        counts_[id].pending &= 0x6;
+        c.pending &= 0x6;
+        c_ptr->store(c, std::memory_order_relaxed);
       }
     }
   }
 
-  int dead_count(int id) {
-    int r = IsLarge(id) ? overflow_[id].dead_count : counts_[id].dead_count;
+  int dead_count(Handle h) {
+    int r = h.is_large_ ? Large(h)->load(std::memory_order_relaxed).dead_count
+                        : Packed(h)->load(std::memory_order_relaxed).dead_count;
     return r;
   }
-  void increment_dead_count(int id) {
-    if (IsLarge(id)) {
-      if (PENDING_NOTREADY == NodeStateLarge(id)) {
-        overflow_[id].dead_count++;
+  void increment_dead_count(Handle h) {
+    if (h.is_large_) {
+      std::atomic<LargeCounts>* c_ptr = Large(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
+      if (PENDING_NOTREADY == NodeStateForStruct(c)) {
+        c.dead_count++;
+        c_ptr->store(c, std::memory_order_relaxed);
       }
     } else {
-      if (PENDING_NOTREADY == NodeStatePacked(id)) {
-        DCHECK_LT(counts_[id].dead_count, kMaxCountForPackedCounts);
-        counts_[id].dead_count++;
+      std::atomic<PackedCounts>* c_ptr = Packed(h);
+      auto c = c_ptr->load(std::memory_order_relaxed);
+      if (PENDING_NOTREADY == NodeStateForStruct(c)) {
+        DCHECK_LT(c.dead_count, kMaxCountForPackedCounts);
+        c.dead_count++;
+        c_ptr->store(c, std::memory_order_relaxed);
       }
     }
   }
 
-  // Initialize the state from "b".
-  // REQUIRES: "num_nodes_ == b.num_nodes_"
-  void InitializeFrom(const PendingCounts& b) {
-    DCHECK_EQ(num_nodes_, b.num_nodes_);
-    for (int id = 0; id < num_nodes_; id++) {
-      counts_[id] = b.counts_[id];
+  struct AdjustResult {
+    bool any_dead;
+    bool any_pending;
+
+    AdjustResult(bool any_dead, bool any_pending)
+        : any_dead(any_dead), any_pending(any_pending) {}
+  };
+
+  // A streamlined routine that does several pieces of bookkeeping at
+  // once.  Equivalent to:
+  //    if (increment_dead) increment_dead_count(h);
+  //    decrement_pending(h, 1);
+  //    return {dead_count(h) > 0, pending(h) > 0};
+  AdjustResult adjust_for_activation(Handle h, bool increment_dead) {
+    DCHECK_GE(pending(h), 1);
+    if (h.is_large_) {
+      return adjust_for_activation_shared(Large(h), increment_dead);
+    } else {
+      return adjust_for_activation_shared(Packed(h), increment_dead);
     }
-    overflow_ = b.overflow_;
   }
 
+  // The same as the above, but performs the operation atomically. This
+  // is thread-safe to run concurrently with other threads.
+  AdjustResult adjust_for_activation_atomic(Handle h, bool increment_dead) {
+    DCHECK_GE(pending(h), 1);
+    if (h.is_large_) {
+      return adjust_for_activation_shared_atomic(Large(h), increment_dead);
+    } else {
+      return adjust_for_activation_shared_atomic(Packed(h), increment_dead);
+    }
+  }
+
+  class Handle {
+   public:
+    Handle() : byte_offset_(0), is_large_(0) {}
+
+   private:
+    friend class PendingCounts;
+    int byte_offset_ : 31;  // Byte offset of the rep in PendingCounts object
+    bool is_large_ : 1;  // If true, rep is LargeCounts; otherwise PackedCounts
+  };
+
  private:
+  template <typename T>
+  inline AdjustResult adjust_for_activation_shared(std::atomic<T>* c,
+                                                   bool increment_dead) {
+    T val = c->load(std::memory_order_relaxed);
+    if (increment_dead && PENDING_NOTREADY == NodeStateForStruct(val)) {
+      val.dead_count++;
+    }
+    val.pending--;
+    c->store(val, std::memory_order_relaxed);
+    return AdjustResult(val.dead_count, val.pending);
+  }
+
+  template <typename T>
+  inline AdjustResult adjust_for_activation_shared_atomic(std::atomic<T>* c,
+                                                          bool increment_dead) {
+    T old_val = c->load(std::memory_order_relaxed);
+    while (true) {
+      T new_val = old_val;
+      if (increment_dead && PENDING_NOTREADY == NodeStateForStruct(new_val)) {
+        new_val.dead_count++;
+      }
+      new_val.pending--;
+      AdjustResult ret(new_val.dead_count, new_val.pending);
+      if (TF_PREDICT_TRUE(c->compare_exchange_weak(old_val, new_val)))
+        return ret;
+    }
+  }
+
   // We keep track of the pending count and dead input count for each
   // graph node.  The representation used here is designed to be cache
   // efficient for graphs with large numbers of nodes, where most
@@ -185,69 +321,81 @@ class PendingCounts {
   // use one byte to hold both the pending and dead count for a node
   // where these together can fit in one byte, and we use a hash table
   // to handle the rare node ids that need larger counts than this.
-
-  // TODO(yuanbyu): We current use O(# of nodes in partition) space
-  // even for nested iterations where only a small fraction of the
-  // nodes are involved.  This is not efficient if the subgraph for
-  // the frame is only a small subset of the partition. We should make
-  // the vector size to be only the size of the frame subgraph.
+  // Each frame in this subgraph has its own PendingCounts.
 
   // We use 3 bits each for dead_count and pending.
-  static const int kMaxCountForPackedCounts = 7;
+  static constexpr int kMaxCountForPackedCounts = 7;
 
-  bool IsLarge(int id) const {
-    DCHECK_GE(id, 0);
-    DCHECK_LT(id, num_nodes_);
-    return counts_[id].is_large;
-  }
-  // Requires !IsLarge(id).
-  NodeState NodeStatePacked(int id) const {
-    if (counts_[id].has_started) {
-      return (counts_[id].pending == 0) ? STARTED : COMPLETED;
-    } else {
-      return (counts_[id].pending == 0) ? PENDING_READY : PENDING_NOTREADY;
-    }
-  }
-  // Requires IsLarge(id).
-  NodeState NodeStateLarge(int id) {
-    int pending = overflow_[id].pending;
-    if (pending > 0) {
-      return PENDING_NOTREADY;
-    } else if (pending == 0) {
-      return PENDING_READY;
-    } else if (pending == -1) {
-      return STARTED;
-    } else {
-      return COMPLETED;
-    }
-  }
   // Most counts are small, so we pack a pending count and a dead
   // count into 3 bits each, use 1 bit to indicate that the node has
-  // started computing, and then use the final bit as a marker bit.
-  // If "is_large" is true, then the true pending and dead_count for
-  // that "id" are stored as full 32-bit counts in "overflow_", a hash
-  // table indexed by id.
+  // started computing.
   struct PackedCounts {
     uint8 pending : 3;
     uint8 dead_count : 3;
     uint8 has_started : 1;
-    uint8 is_large : 1;
   };
 
-  struct LargeCounts {
-    // A negative value for pending indicates that the node has
-    // started executing.
-    int pending = 0;
-    int dead_count = 0;
+  // NOTE: alignas(8) is critical to implement efficient atomic<LargeCounts>
+  // on MSVC.
+  struct alignas(8) LargeCounts {
+    uint32 pending;
+    uint32 dead_count : 31;
+    // NOTE(tlipcon): MSVC won't pack this struct into 8 bytes unless
+    // all of the member types are uint32.
+    uint32 has_started : 1;
   };
 
-  const int num_nodes_;  // Just for bounds checking in debug mode
-  PackedCounts* counts_;
-  std::unordered_map<int, LargeCounts> overflow_;
+  template <typename T>
+  NodeState NodeStateForStruct(const T& c) const {
+    if (c.has_started) {
+      return (c.pending == 0) ? STARTED : COMPLETED;
+    } else {
+      return (c.pending == 0) ? PENDING_READY : PENDING_NOTREADY;
+    }
+  }
+  inline std::atomic<LargeCounts>* Large(Handle h) {
+    DCHECK(h.is_large_);
+    DCHECK_LE(h.byte_offset_ + sizeof(std::atomic<LargeCounts>), num_bytes_);
+    DCHECK_EQ(h.byte_offset_ % alignof(std::atomic<LargeCounts>), 0);
+    return reinterpret_cast<std::atomic<LargeCounts>*>(bytes_ + h.byte_offset_);
+  }
+  inline std::atomic<PackedCounts>* Packed(Handle h) {
+    DCHECK(!h.is_large_);
+    DCHECK_LE(h.byte_offset_ + sizeof(PackedCounts), num_bytes_);
+    return reinterpret_cast<std::atomic<PackedCounts>*>(bytes_ +
+                                                        h.byte_offset_);
+  }
 
-  TF_DISALLOW_COPY_AND_ASSIGN(PendingCounts);
+  const int num_bytes_;  // Just for bounds checking in debug mode
+  char* bytes_;          // Array of num_bytes_ bytes
+
+  void operator=(const PendingCounts&) = delete;
 };
+
+inline PendingCounts::Handle PendingCounts::Layout::CreateHandle(
+    size_t max_pending_count, size_t max_dead_count) {
+  Handle result;
+  if ((max_pending_count > kMaxCountForPackedCounts) ||
+      (max_dead_count > kMaxCountForPackedCounts)) {
+    constexpr int B = sizeof(std::atomic<LargeCounts>);
+    // Round byte offset to proper alignment
+    static_assert(
+        sizeof(std::atomic<LargeCounts>) >= alignof(std::atomic<LargeCounts>),
+        "std::atomic<LargeCounts> must be packed");
+    int64_t offset = ((static_cast<int64>(next_offset_) + B - 1) / B) * B;
+    result.byte_offset_ = offset;
+    result.is_large_ = true;
+    next_offset_ = result.byte_offset_ + B;
+  } else {
+    result.byte_offset_ = next_offset_;
+    result.is_large_ = false;
+    static_assert(sizeof(std::atomic<PackedCounts>) == 1,
+                  "std::atomic<PackedCounts> should be a single byte");
+    next_offset_ += sizeof(std::atomic<PackedCounts>);
+  }
+  return result;
+}
 
 }  // end namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_COMMON_RUNTIME_PENDING_COUNTS_H_
+#endif  // TENSORFLOW_CORE_COMMON_RUNTIME_PENDING_COUNTS_H_

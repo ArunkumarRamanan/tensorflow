@@ -40,27 +40,34 @@ static Graph* Multinomial(int batch_size, int num_classes, int num_samples) {
   return g;
 }
 
-#define BM_MultinomialDev(DEVICE, B, C, S)                           \
-  static void BM_Multinomial_##DEVICE##_##B##_##C##_##S(int iters) { \
-    test::Benchmark(#DEVICE, Multinomial(B, C, S)).Run(iters);       \
-    testing::ItemsProcessed(static_cast<int64>(B) * C * S * iters);  \
-  }                                                                  \
+#define BM_MultinomialDev(DEVICE, B, C, S)                  \
+  static void BM_Multinomial_##DEVICE##_##B##_##C##_##S(    \
+      ::testing::benchmark::State& state) {                 \
+    test::Benchmark(#DEVICE, Multinomial(B, C, S),          \
+                    /*old_benchmark_api*/ false)            \
+        .Run(state);                                        \
+    state.SetItemsProcessed(static_cast<int64>(B) * C * S * \
+                            state.iterations());            \
+  }                                                         \
   BENCHMARK(BM_Multinomial_##DEVICE##_##B##_##C##_##S);
 
 #define BM_MultinomialBCS(B, C, S) \
   BM_MultinomialDev(cpu, B, C, S); \
   BM_MultinomialDev(gpu, B, C, S);
 
+// NOTE(zongheng): some more expensive cases are commented out; left here since
+// they could still be useful in covering realistic cases.
+
 BM_MultinomialBCS(1, 10000, 4);
 BM_MultinomialBCS(1, 10000, 128);
 BM_MultinomialBCS(1, 10000, 10000);
 BM_MultinomialBCS(1, 100000, 4);
-BM_MultinomialBCS(1, 100000, 128);
+// BM_MultinomialBCS(1, 100000, 128);
 
 BM_MultinomialBCS(32, 10000, 4);
 BM_MultinomialBCS(32, 10000, 128);
 BM_MultinomialBCS(32, 100000, 4);
-BM_MultinomialBCS(32, 100000, 128);
+// BM_MultinomialBCS(32, 100000, 128);
 
 BM_MultinomialBCS(128, 100000, 1);
 // BM_MultinomialBCS(128, 100000, 128);

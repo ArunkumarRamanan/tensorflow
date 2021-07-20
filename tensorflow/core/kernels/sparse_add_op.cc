@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_util.h"
@@ -34,20 +35,27 @@ class SparseAddOp : public OpKernel {
 
     OP_REQUIRES_OK(ctx, ctx->input("a_indices", &a_indices));
     OP_REQUIRES_OK(ctx, ctx->input("b_indices", &b_indices));
-    OP_REQUIRES(ctx, TensorShapeUtils::IsMatrix(a_indices->shape()) &&
-                         TensorShapeUtils::IsMatrix(b_indices->shape()),
+    OP_REQUIRES(ctx,
+                TensorShapeUtils::IsMatrix(a_indices->shape()) &&
+                    TensorShapeUtils::IsMatrix(b_indices->shape()),
                 errors::InvalidArgument(
                     "Input indices should be matrices but received shapes: ",
                     a_indices->shape().DebugString(), " and ",
                     b_indices->shape().DebugString()));
     const int64 a_nnz = a_indices->dim_size(0);
     const int64 b_nnz = b_indices->dim_size(0);
+    const int num_dims = a_indices->dim_size(1);
+    OP_REQUIRES(ctx, b_indices->dim_size(1) == num_dims,
+                errors::InvalidArgument(
+                    "Input indices must have the same dimension, got ",
+                    num_dims, " and ", b_indices->dim_size(1)));
 
     OP_REQUIRES_OK(ctx, ctx->input("a_values", &a_values_t));
     OP_REQUIRES_OK(ctx, ctx->input("b_values", &b_values_t));
 
-    OP_REQUIRES(ctx, TensorShapeUtils::IsVector(a_values_t->shape()) &&
-                         TensorShapeUtils::IsVector(b_values_t->shape()),
+    OP_REQUIRES(ctx,
+                TensorShapeUtils::IsVector(a_values_t->shape()) &&
+                    TensorShapeUtils::IsVector(b_values_t->shape()),
                 errors::InvalidArgument(
                     "Input values should be vectors but received shapes: ",
                     a_values_t->shape().DebugString(), " and ",
@@ -62,12 +70,20 @@ class SparseAddOp : public OpKernel {
 
     OP_REQUIRES_OK(ctx, ctx->input("a_shape", &a_shape));
     OP_REQUIRES_OK(ctx, ctx->input("b_shape", &b_shape));
-    OP_REQUIRES(ctx, TensorShapeUtils::IsVector(a_shape->shape()) &&
-                         TensorShapeUtils::IsVector(b_shape->shape()),
+    OP_REQUIRES(ctx,
+                TensorShapeUtils::IsVector(a_shape->shape()) &&
+                    TensorShapeUtils::IsVector(b_shape->shape()),
                 errors::InvalidArgument(
                     "Input shapes should be a vector but received shapes ",
                     a_shape->shape().DebugString(), " and ",
                     b_shape->shape().DebugString()));
+    OP_REQUIRES(
+        ctx, a_shape->NumElements() == num_dims,
+        errors::InvalidArgument("Second dimension of a_indices and length of "
+                                "a_shape must match, got ",
+                                num_dims, " and ", a_shape->NumElements()));
+    OP_REQUIRES(ctx, num_dims > 0,
+                errors::InvalidArgument("Tesors must not be empty"));
     OP_REQUIRES(
         ctx, a_shape->IsSameSize(*b_shape),
         errors::InvalidArgument(
@@ -96,7 +112,6 @@ class SparseAddOp : public OpKernel {
     std::vector<std::pair<bool, int64>> entries_to_copy;  // from_a?, idx
     entries_to_copy.reserve(a_nnz + b_nnz);
     std::vector<T> out_values;
-    const int num_dims = a_shape->dim_size(0);
 
     // The input and output sparse tensors are assumed to be ordered along
     // increasing dimension number.
@@ -156,7 +171,9 @@ class SparseAddOp : public OpKernel {
       out_indices_mat.chip<0>(i) =
           from_a ? a_indices_mat.chip<0>(idx) : b_indices_mat.chip<0>(idx);
     }
-    std::copy_n(out_values.begin(), sum_nnz, &out_values_flat(0));
+    if (sum_nnz > 0) {
+      std::copy_n(out_values.begin(), sum_nnz, &out_values_flat(0));
+    }
     ctx->set_output(2, *a_shape);
   }
 };

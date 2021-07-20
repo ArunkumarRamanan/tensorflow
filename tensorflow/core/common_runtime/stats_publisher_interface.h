@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_COMMON_RUNTIME_STATS_PUBLISHER_INTERFACE_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_COMMON_RUNTIME_STATS_PUBLISHER_INTERFACE_H_
+#ifndef TENSORFLOW_CORE_COMMON_RUNTIME_STATS_PUBLISHER_INTERFACE_H_
+#define TENSORFLOW_CORE_COMMON_RUNTIME_STATS_PUBLISHER_INTERFACE_H_
 
 #include "tensorflow/core/common_runtime/build_graph_options.h"
 #include "tensorflow/core/common_runtime/profile_handler.h"
@@ -46,7 +46,7 @@ class StatsPublisherInterface {
   //
   // This method may return a null pointer, if no handler was created.
   virtual std::unique_ptr<ProfileHandler> GetProfileHandler(
-      uint64 step, int64 execution_count, const RunOptions& ropts) = 0;
+      uint64 step, int64_t execution_count, const RunOptions& ropts) = 0;
 
   virtual ~StatsPublisherInterface() {}
 };
@@ -61,4 +61,4 @@ std::unique_ptr<StatsPublisherInterface> CreateNoOpStatsPublisher(
 
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_COMMON_RUNTIME_STATS_PUBLISHER_INTERFACE_H_
+#endif  // TENSORFLOW_CORE_COMMON_RUNTIME_STATS_PUBLISHER_INTERFACE_H_

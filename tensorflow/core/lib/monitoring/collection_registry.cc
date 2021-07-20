@@ -15,6 +15,10 @@ limitations under the License.
 
 #include "tensorflow/core/lib/monitoring/collection_registry.h"
 
+// We replace this implementation with a null implementation for mobile
+// platforms.
+#ifndef IS_MOBILE_PLATFORM
+
 #include "tensorflow/core/platform/logging.h"
 
 namespace tensorflow {
@@ -38,20 +42,19 @@ void Collector::CollectMetricDescriptor(
     mutex_lock l(mu_);
     return collected_metrics_->metric_descriptor_map
         .insert(std::make_pair(
-            metric_def->name().ToString(),
+            string(metric_def->name()),
             std::unique_ptr<MetricDescriptor>(new MetricDescriptor())))
         .first->second.get();
   }();
-  metric_descriptor->name = metric_def->name().ToString();
-  metric_descriptor->description = metric_def->description().ToString();
+  metric_descriptor->name = string(metric_def->name());
+  metric_descriptor->description = string(metric_def->description());
 
   for (const StringPiece label_name : metric_def->label_descriptions()) {
-    metric_descriptor->label_names.push_back(label_name.ToString());
+    metric_descriptor->label_names.emplace_back(label_name);
   }
 
-  // Only cumulative int64 counter is implemented at the moment.
-  metric_descriptor->metric_kind = MetricKind::kCumulative;
-  metric_descriptor->value_type = ValueType::kInt64;
+  metric_descriptor->metric_kind = metric_def->kind();
+  metric_descriptor->value_type = metric_def->value_type();
 }
 
 }  // namespace internal
@@ -75,8 +78,9 @@ CollectionRegistry::Register(const AbstractMetricDef* const metric_def,
 
   const auto found_it = registry_.find(metric_def->name());
   if (found_it != registry_.end()) {
-    LOG(FATAL) << "Cannot register 2 metrics with the same name: "
+    LOG(ERROR) << "Cannot register 2 metrics with the same name: "
                << metric_def->name();
+    return nullptr;
   }
   registry_.insert(
       {metric_def->name(),
@@ -108,3 +112,5 @@ std::unique_ptr<CollectedMetrics> CollectionRegistry::CollectMetrics(
 
 }  // namespace monitoring
 }  // namespace tensorflow
+
+#endif  // IS_MOBILE_PLATFORM

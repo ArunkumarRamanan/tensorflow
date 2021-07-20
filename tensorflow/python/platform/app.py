@@ -18,13 +18,23 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import sys
+import sys as _sys
+
+from absl.app import run as _run
 
 from tensorflow.python.platform import flags
+from tensorflow.python.util.tf_export import tf_export
 
 
-def run(main=None):
-  f = flags.FLAGS
-  flags_passthrough = f._parse_flags()
-  main = main or sys.modules['__main__'].main
-  sys.exit(main(sys.argv[:1] + flags_passthrough))
+def _parse_flags_tolerate_undef(argv):
+  """Parse args, returning any unknown flags (ABSL defaults to crashing)."""
+  return flags.FLAGS(_sys.argv if argv is None else argv, known_only=True)
+
+
+@tf_export(v1=['app.run'])
+def run(main=None, argv=None):
+  """Runs the program with an optional 'main' function and 'argv' list."""
+
+  main = main or _sys.modules['__main__'].main
+
+  _run(main=main, argv=argv, flags_parser=_parse_flags_tolerate_undef)

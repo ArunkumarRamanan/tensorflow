@@ -27,6 +27,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
+#include "tensorflow/core/util/overflow.h"
 #include "tensorflow/core/util/sparse/sparse_tensor.h"
 
 namespace tensorflow {
@@ -66,12 +67,31 @@ class SparseConcatOp : public OpKernel {
     OP_REQUIRES(context, shapes.size() == N,
                 errors::InvalidArgument("Expected ", N, " input shapes, got ",
                                         shapes.size()));
+    bool overflow_ocurred = false;
     for (int i = 0; i < N; i++) {
+      int64 new_num_elements = 1;
       OP_REQUIRES(context, TensorShapeUtils::IsVector(shapes[i].shape()),
                   errors::InvalidArgument(
                       "Input shapes should be a vector but received shape ",
                       shapes[i].shape().DebugString(), " at position ", i));
+      auto input_shape_vector = shapes[i].vec<int64>();
+      for (int j = 0; j < input_shape_vector.size(); j++) {
+        new_num_elements =
+            MultiplyWithoutOverflow(new_num_elements, input_shape_vector(j));
+        if (new_num_elements < 0) {
+          overflow_ocurred = true;
+          break;
+        }
+      }
+
+      if (overflow_ocurred) {
+        break;
+      }
     }
+
+    OP_REQUIRES(
+        context, !overflow_ocurred,
+        errors::Internal("Encountered overflow from large input shape."));
 
     const TensorShape input_shape(shapes[0].vec<int64>());
     const int input_rank = input_shape.dims();
@@ -124,9 +144,12 @@ class SparseConcatOp : public OpKernel {
     std::vector<sparse::SparseTensor> sp_inputs;
     for (int i = 0; i < N; ++i) {
       const TensorShape current_shape(shapes[i].vec<int64>());
-      sp_inputs.emplace_back(tensor::DeepCopy(inds[i]),
-                             tensor::DeepCopy(vals[i]), current_shape,
-                             std_order);
+      sparse::SparseTensor tensor;
+      OP_REQUIRES_OK(context,
+                     sparse::SparseTensor::Create(
+                         tensor::DeepCopy(inds[i]), tensor::DeepCopy(vals[i]),
+                         current_shape, std_order, &tensor));
+      sp_inputs.push_back(std::move(tensor));
       sp_inputs[i].Reorder<T>(concat_order);
     }
 
@@ -137,12 +160,13 @@ class SparseConcatOp : public OpKernel {
     context->set_output(1, concat.values());
 
     Tensor* output_shape_out = nullptr;
-    OP_REQUIRES_OK(context, context->allocate_output(
-                                2, TensorShape({concat.shape().dims()}),
-                                &output_shape_out));
+    OP_REQUIRES_OK(context,
+                   context->allocate_output(2, TensorShape({concat.dims()}),
+                                            &output_shape_out));
     auto output_shape = output_shape_out->vec<int64>();
-    for (int j = 0; j < concat.shape().dims(); ++j) {
-      output_shape(j) = concat.shape().dim_size(j);
+    auto concat_shape = concat.shape();
+    for (int j = 0; j < concat.dims(); ++j) {
+      output_shape(j) = concat_shape[j];
     }
   }
 

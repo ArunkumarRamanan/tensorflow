@@ -13,81 +13,54 @@
 # limitations under the License.
 # ==============================================================================
 
-# pylint: disable=g-short-docstring-punctuation
-"""## Unit tests
+"""Testing."""
 
-TensorFlow provides a convenience class inheriting from `unittest.TestCase`
-which adds methods relevant to TensorFlow tests.  Here is an example:
-
-```python
-    import tensorflow as tf
-
-
-    class SquareTest(tf.test.TestCase):
-
-      def testSquare(self):
-        with self.test_session():
-          x = tf.square([2, 3])
-          self.assertAllEqual(x.eval(), [4, 9])
-
-
-    if __name__ == '__main__':
-      tf.test.main()
-```
-
-`tf.test.TestCase` inherits from `unittest.TestCase` but adds a few additional
-methods.  We will document these methods soon.
-
-@@main
-
-## Utilities
-
-@@assert_equal_graph_def
-@@get_temp_dir
-@@is_built_with_cuda
-
-## Gradient checking
-
-[`compute_gradient`](#compute_gradient) and
-[`compute_gradient_error`](#compute_gradient_error) perform numerical
-differentiation of graphs for comparison against registered analytic gradients.
-
-@@compute_gradient
-@@compute_gradient_error
-
-"""
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from tensorflow.python.client import device_lib
-from tensorflow.python.framework import test_util
-from tensorflow.python.platform import googletest
-from tensorflow.python.util.all_util import make_all
+
+# pylint: disable=g-bad-import-order
+from tensorflow.python.framework import test_util as _test_util
+from tensorflow.python.platform import googletest as _googletest
 
 # pylint: disable=unused-import
-from tensorflow.python.framework.test_util import TensorFlowTestCase as TestCase
 from tensorflow.python.framework.test_util import assert_equal_graph_def
+from tensorflow.python.framework.test_util import create_local_cluster
+from tensorflow.python.framework.test_util import TensorFlowTestCase as TestCase
+from tensorflow.python.framework.test_util import gpu_device_name
+from tensorflow.python.framework.test_util import is_gpu_available
 
 from tensorflow.python.ops.gradient_checker import compute_gradient_error
 from tensorflow.python.ops.gradient_checker import compute_gradient
-# pylint: enable=unused-import
+# pylint: enable=unused-import,g-bad-import-order
+
+import functools
 
 import sys
+from tensorflow.python.util.tf_export import tf_export
 if sys.version_info.major == 2:
   import mock                # pylint: disable=g-import-not-at-top,unused-import
 else:
-  from unittest import mock  # pylint: disable=g-import-not-at-top
+  from unittest import mock  # pylint: disable=g-import-not-at-top,g-importing-member
+
+tf_export(v1=['test.mock'])(mock)
 
 # Import Benchmark class
-Benchmark = googletest.Benchmark  # pylint: disable=invalid-name
+Benchmark = _googletest.Benchmark  # pylint: disable=invalid-name
+
+# Import StubOutForTesting class
+StubOutForTesting = _googletest.StubOutForTesting  # pylint: disable=invalid-name
 
 
-def main():
+@tf_export('test.main')
+def main(argv=None):
   """Runs all unit tests."""
-  return googletest.main()
+  _test_util.InstallStackTraceHandler()
+  return _googletest.main(argv)
 
 
+@tf_export(v1=['test.get_temp_dir'])
 def get_temp_dir():
   """Returns a temporary directory for use during tests.
 
@@ -96,9 +69,10 @@ def get_temp_dir():
   Returns:
     The temporary directory.
   """
-  return googletest.GetTempDir()
+  return _googletest.GetTempDir()
 
 
+@tf_export(v1=['test.test_src_dir_path'])
 def test_src_dir_path(relative_path):
   """Creates an absolute test srcdir path given a relative path.
 
@@ -109,19 +83,109 @@ def test_src_dir_path(relative_path):
   Returns:
     An absolute path to the linked in runfiles.
   """
-  return googletest.test_src_dir_path(relative_path)
+  return _googletest.test_src_dir_path(relative_path)
 
 
+@tf_export('test.is_built_with_cuda')
 def is_built_with_cuda():
-  """Returns whether TensorFlow was built with CUDA (GPU) support."""
-  return test_util.IsGoogleCudaEnabled()
+  """Returns whether TensorFlow was built with CUDA (GPU) support.
+
+  This method should only be used in tests written with `tf.test.TestCase`. A
+  typical usage is to skip tests that should only run with CUDA (GPU).
+
+  >>> class MyTest(tf.test.TestCase):
+  ...
+  ...   def test_add_on_gpu(self):
+  ...     if not tf.test.is_built_with_cuda():
+  ...       self.skipTest("test is only applicable on GPU")
+  ...
+  ...     with tf.device("GPU:0"):
+  ...       self.assertEqual(tf.math.add(1.0, 2.0), 3.0)
+
+  TensorFlow official binary is built with CUDA.
+  """
+  return _test_util.IsGoogleCudaEnabled()
 
 
-def is_gpu_available():
-  """Returns whether TensorFlow can access a GPU."""
-  return any(x.device_type == 'GPU' for x in device_lib.list_local_devices())
+@tf_export('test.is_built_with_rocm')
+def is_built_with_rocm():
+  """Returns whether TensorFlow was built with ROCm (GPU) support.
+
+  This method should only be used in tests written with `tf.test.TestCase`. A
+  typical usage is to skip tests that should only run with ROCm (GPU).
+
+  >>> class MyTest(tf.test.TestCase):
+  ...
+  ...   def test_add_on_gpu(self):
+  ...     if not tf.test.is_built_with_rocm():
+  ...       self.skipTest("test is only applicable on GPU")
+  ...
+  ...     with tf.device("GPU:0"):
+  ...       self.assertEqual(tf.math.add(1.0, 2.0), 3.0)
+
+  TensorFlow official binary is NOT built with ROCm.
+  """
+  return _test_util.IsBuiltWithROCm()
 
 
-__all__ = make_all(__name__)
-# TODO(irving,vrv): Remove once TestCase is documented
-__all__.append('TestCase')
+@tf_export('test.disable_with_predicate')
+def disable_with_predicate(pred, skip_message):
+  """Disables the test if pred is true."""
+
+  def decorator_disable_with_predicate(func):
+
+    @functools.wraps(func)
+    def wrapper_disable_with_predicate(self, *args, **kwargs):
+      if pred():
+        self.skipTest(skip_message)
+      else:
+        return func(self, *args, **kwargs)
+
+    return wrapper_disable_with_predicate
+
+  return decorator_disable_with_predicate
+
+
+@tf_export('test.is_built_with_gpu_support')
+def is_built_with_gpu_support():
+  """Returns whether TensorFlow was built with GPU (CUDA or ROCm) support.
+
+  This method should only be used in tests written with `tf.test.TestCase`. A
+  typical usage is to skip tests that should only run with GPU.
+
+  >>> class MyTest(tf.test.TestCase):
+  ...
+  ...   def test_add_on_gpu(self):
+  ...     if not tf.test.is_built_with_gpu_support():
+  ...       self.skipTest("test is only applicable on GPU")
+  ...
+  ...     with tf.device("GPU:0"):
+  ...       self.assertEqual(tf.math.add(1.0, 2.0), 3.0)
+
+  TensorFlow official binary is built with CUDA GPU support.
+  """
+  return is_built_with_cuda() or is_built_with_rocm()
+
+
+@tf_export('test.is_built_with_xla')
+def is_built_with_xla():
+  """Returns whether TensorFlow was built with XLA support.
+
+  This method should only be used in tests written with `tf.test.TestCase`. A
+  typical usage is to skip tests that should only run with XLA.
+
+  >>> class MyTest(tf.test.TestCase):
+  ...
+  ...   def test_add_on_xla(self):
+  ...     if not tf.test.is_built_with_xla():
+  ...       self.skipTest("test is only applicable on XLA")
+
+  ...     @tf.function(jit_compile=True)
+  ...     def add(x, y):
+  ...       return tf.math.add(x, y)
+  ...
+  ...     self.assertEqual(add(tf.ones(()), tf.ones(())), 2.0)
+
+  TensorFlow official binary is built with XLA.
+  """
+  return _test_util.IsBuiltWithXLA()

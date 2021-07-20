@@ -13,15 +13,23 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for draw_bounding_box_op."""
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
 import numpy as np
-import tensorflow as tf
+
+from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import ops
+from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import image_ops
+from tensorflow.python.ops import image_ops_impl
+from tensorflow.python.ops import math_ops
+from tensorflow.python.platform import test
 
 
-class DrawBoundingBoxOpTest(tf.test.TestCase):
+class DrawBoundingBoxOpTest(test.TestCase):
 
   def _fillBorder(self, image, color):
     """Fill the border of the image.
@@ -46,18 +54,20 @@ class DrawBoundingBoxOpTest(tf.test.TestCase):
     image[height - 1, 0:width, 0:depth] = color
     return image
 
-  def _testDrawBoundingBoxColorCycling(self, img):
+  def _testDrawBoundingBoxColorCycling(self, img, colors=None):
     """Tests if cycling works appropriately.
 
     Args:
       img: 3-D numpy image on which to draw.
     """
-    # THIS TABLE MUST MATCH draw_bounding_box_op.cc
-    color_table = np.asarray([[1, 1, 0, 1], [0, 0, 1, 1], [1, 0, 0, 1],
-                              [0, 1, 0, 1], [0.5, 0, 0.5, 1],
-                              [0.5, 0.5, 0, 1], [0.5, 0, 0, 1],
-                              [0, 0, 0.5, 1], [0, 1, 1, 1],
-                              [1, 0, 1, 1]])
+    color_table = colors
+    if colors is None:
+      # THIS TABLE MUST MATCH draw_bounding_box_op.cc
+      color_table = np.asarray([[1, 1, 0, 1], [0, 0, 1, 1], [1, 0, 0, 1],
+                                [0, 1, 0, 1], [0.5, 0, 0.5,
+                                               1], [0.5, 0.5, 0, 1],
+                                [0.5, 0, 0, 1], [0, 0, 0.5, 1], [0, 1, 1, 1],
+                                [1, 0, 1, 1]])
     assert len(img.shape) == 3
     depth = img.shape[2]
     assert depth <= color_table.shape[1]
@@ -73,13 +83,13 @@ class DrawBoundingBoxOpTest(tf.test.TestCase):
       test_drawn_image = self._fillBorder(image, color)
       bboxes = np.asarray([0, 0, 1, 1])
       bboxes = np.vstack([bboxes for _ in range(num_boxes)])
-      bboxes = tf.to_float(bboxes)
-      bboxes = tf.expand_dims(bboxes, 0)
-      image = tf.convert_to_tensor(image)
-      image = tf.image.convert_image_dtype(image, tf.float32)
-      image = tf.expand_dims(image, 0)
-      image = tf.image.draw_bounding_boxes(image, bboxes)
-      with self.test_session(use_gpu=False) as sess:
+      bboxes = math_ops.cast(bboxes, dtypes.float32)
+      bboxes = array_ops.expand_dims(bboxes, 0)
+      image = ops.convert_to_tensor(image)
+      image = image_ops_impl.convert_image_dtype(image, dtypes.float32)
+      image = array_ops.expand_dims(image, 0)
+      image = image_ops.draw_bounding_boxes(image, bboxes, colors=colors)
+      with self.cached_session(use_gpu=False) as sess:
         op_drawn_image = np.squeeze(sess.run(image), 0)
         self.assertAllEqual(test_drawn_image, op_drawn_image)
 
@@ -98,5 +108,20 @@ class DrawBoundingBoxOpTest(tf.test.TestCase):
     image = np.zeros([4, 4, 1], "float32")
     self._testDrawBoundingBoxColorCycling(image)
 
+  def testDrawBoundingBoxRGBColorCyclingWithColors(self):
+    """Test if RGB color cycling works correctly with provided colors."""
+    image = np.zeros([10, 10, 3], "float32")
+    colors = np.asarray([[1, 1, 0, 1], [0, 0, 1, 1], [0.5, 0, 0.5, 1],
+                         [0.5, 0.5, 0, 1], [0, 1, 1, 1], [1, 0, 1, 1]])
+    self._testDrawBoundingBoxColorCycling(image, colors=colors)
+
+  def testDrawBoundingBoxRGBAColorCyclingWithColors(self):
+    """Test if RGBA color cycling works correctly with provided colors."""
+    image = np.zeros([10, 10, 4], "float32")
+    colors = np.asarray([[0.5, 0, 0.5, 1], [0.5, 0.5, 0, 1], [0.5, 0, 0, 1],
+                         [0, 0, 0.5, 1]])
+    self._testDrawBoundingBoxColorCycling(image, colors=colors)
+
+
 if __name__ == "__main__":
-  tf.test.main()
+  test.main()

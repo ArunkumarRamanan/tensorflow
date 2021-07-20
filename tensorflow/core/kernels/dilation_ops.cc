@@ -17,20 +17,20 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
+#include "tensorflow/core/kernels/dilation_ops.h"
+
 #include <cfloat>
 #include <vector>
 
-#include "tensorflow/core/kernels/dilation_ops.h"
-
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 #include "tensorflow/core/common_runtime/device.h"
+#include "tensorflow/core/framework/kernel_shape_util.h"
 #include "tensorflow/core/framework/numeric_op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_slice.h"
-#include "tensorflow/core/kernels/ops_util.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
 #include "tensorflow/core/util/padding.h"
@@ -91,10 +91,10 @@ void ParseSizes(OpKernelContext* context, const std::vector<int32>& strides,
                                       filter.shape().DebugString()));
   const int filter_rows = filter.dim_size(0);
   const int filter_cols = filter.dim_size(1);
-  OP_REQUIRES(
-      context, depth == filter.dim_size(2),
-      errors::InvalidArgument("input and filter must have the same depth: ",
-                              depth, " vs ", filter.dim_size(2)));
+  OP_REQUIRES(context, depth == filter.dim_size(2),
+              errors::InvalidArgument(
+                  "input and filter must have the same depth: ", depth, " vs ",
+                  filter.dim_size(2)));
 
   // Effective filter size, after introducing rate - 1 zeros between each
   // non-zero filter element.
@@ -130,6 +130,7 @@ class DilationOp : public OpKernel {
     ParseSizes(context, strides_, rates_, padding_, &stride_rows, &stride_cols,
                &rate_rows, &rate_cols, &pad_top, &pad_left, &out_rows,
                &out_cols);
+    if (!context->status().ok()) return;
 
     // Output tensor is of the following dimensions:
     // [ batch, out_rows, out_cols, depth ]
@@ -229,15 +230,17 @@ class DilationBackpropInputOp : public OpKernel {
     ParseSizes(context, strides_, rates_, padding_, &stride_rows, &stride_cols,
                &rate_rows, &rate_cols, &pad_top, &pad_left, &out_rows,
                &out_cols);
+    if (!context->status().ok()) return;
 
     // Verify that the incoming gradient tensor has the expected size
     // [ batch, out_rows, out_cols, depth ]
     const int batch = input.dim_size(0);
     const int depth = input.dim_size(3);
-    OP_REQUIRES(context, batch == out_backprop.dim_size(0) &&
-                             out_rows == out_backprop.dim_size(1) &&
-                             out_cols == out_backprop.dim_size(2) &&
-                             depth == out_backprop.dim_size(3),
+    OP_REQUIRES(context,
+                batch == out_backprop.dim_size(0) &&
+                    out_rows == out_backprop.dim_size(1) &&
+                    out_cols == out_backprop.dim_size(2) &&
+                    depth == out_backprop.dim_size(3),
                 errors::InvalidArgument("out_backprop has incompatible size."));
 
     // The computed in_backprop has the same dimensions as the input:
@@ -317,8 +320,10 @@ struct DilationBackpropInput<CPUDevice, T> {
                 }
               }
             }
-            in_backprop(b, h_in_max, w_in_max, d) +=
-                out_backprop(b, h_out, w_out, d);
+            if (h_in_max < input_rows && w_in_max < input_cols) {
+              in_backprop(b, h_in_max, w_in_max, d) +=
+                  out_backprop(b, h_out, w_out, d);
+            }
           }
         }
       }
@@ -348,15 +353,17 @@ class DilationBackpropFilterOp : public OpKernel {
     ParseSizes(context, strides_, rates_, padding_, &stride_rows, &stride_cols,
                &rate_rows, &rate_cols, &pad_top, &pad_left, &out_rows,
                &out_cols);
+    if (!context->status().ok()) return;
 
     // Verify that the incoming gradient tensor has the expected size
     // [ batch, out_rows, out_cols, depth ]
     const int batch = input.dim_size(0);
     const int depth = input.dim_size(3);
-    OP_REQUIRES(context, batch == out_backprop.dim_size(0) &&
-                             out_rows == out_backprop.dim_size(1) &&
-                             out_cols == out_backprop.dim_size(2) &&
-                             depth == out_backprop.dim_size(3),
+    OP_REQUIRES(context,
+                batch == out_backprop.dim_size(0) &&
+                    out_rows == out_backprop.dim_size(1) &&
+                    out_cols == out_backprop.dim_size(2) &&
+                    depth == out_backprop.dim_size(3),
                 errors::InvalidArgument("out_backprop has incompatible size."));
 
     // The computed filter_backprop has the same dimensions as the filter:
@@ -436,8 +443,10 @@ struct DilationBackpropFilter<CPUDevice, T> {
                 }
               }
             }
-            filter_backprop(h_max, w_max, d) +=
-                out_backprop(b, h_out, w_out, d);
+            if (h_max < filter_rows && w_max < filter_cols) {
+              filter_backprop(h_max, w_max, d) +=
+                  out_backprop(b, h_out, w_out, d);
+            }
           }
         }
       }
@@ -465,7 +474,7 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER);
 
 #undef REGISTER
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #define REGISTER(T)                                                 \
   REGISTER_KERNEL_BUILDER(                                          \
@@ -486,6 +495,6 @@ TF_CALL_GPU_NUMBER_TYPES(REGISTER);
 
 #undef REGISTER
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 }  // namespace tensorflow

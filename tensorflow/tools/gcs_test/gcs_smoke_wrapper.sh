@@ -69,9 +69,13 @@ LOG_FILE="/tmp/tf-gcs-test.log"
 rm -rf ${LOG_FILE} || \
     die "ERROR: Failed to remove existing log file ${LOG_FILE}"
 
+# Since https://github.com/tensorflow/tensorflow/pull/47247 we need to
+# enable legacy filesystem for GCS (or switch to the modular one)
+export TF_ENABLE_LEGACY_FILESYSTEM=1
+
 # Invoke main Python file
 python "${GCS_SMOKE_PY}" --gcs_bucket_url="${GCS_BUCKET_URL}" \
-    2>&1 > "${LOG_FILE}"
+    > "${LOG_FILE}" 2>&1
 
 if [[ $? != "0" ]]; then
   cat ${LOG_FILE}
@@ -80,7 +84,6 @@ fi
 
 cat ${LOG_FILE}
 echo ""
-
 
 # Clean up the newly created tfrecord file in GCS bucket.
 # First, activate gcloud service account
@@ -93,6 +96,9 @@ NEW_TFREC_URL=$(grep "Using input path" "${LOG_FILE}" | \
 if [[ -z ${NEW_TFREC_URL} ]]; then
   die "FAIL: Unable to determine the URL to the new tfrecord file in GCS"
 fi
-"${GSUTIL_BIN}" rm "${NEW_TFREC_URL}" && \
-    echo "Cleaned up new tfrecord file in GCS: ${NEW_TFREC_URL}" || \
-    die "FAIL: Unable to clean up new tfrecord file in GCS: ${NEW_TFREC_URL}"
+if "${GSUTIL_BIN}" rm "${NEW_TFREC_URL}"
+then
+  echo "Cleaned up new tfrecord file in GCS: ${NEW_TFREC_URL}"
+else
+  die "FAIL: Unable to clean up new tfrecord file in GCS: ${NEW_TFREC_URL}"
+fi

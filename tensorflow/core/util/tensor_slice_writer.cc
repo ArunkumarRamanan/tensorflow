@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <utility>
 
+#include "tensorflow/core/framework/versions.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/io/table_builder.h"
 #include "tensorflow/core/lib/random/random.h"
@@ -110,7 +111,7 @@ Status TensorSliceWriter::Finish() {
     builder->Add(x.first, x.second);
   }
 
-  int64 file_size;
+  int64_t file_size;
   s = builder->Finish(&file_size);
   // We need to rename the file to the proper name
   if (s.ok()) {
@@ -123,7 +124,7 @@ Status TensorSliceWriter::Finish() {
       LOG(ERROR) << "Failed to rename file " << tmpname_ << " to " << filename_;
     }
   } else {
-    Env::Default()->DeleteFile(tmpname_);
+    Env::Default()->DeleteFile(tmpname_).IgnoreError();
   }
   return s;
 }
@@ -169,17 +170,17 @@ size_t TensorSliceWriter::MaxBytesPerElement(DataType dt) {
     case DT_STRING:
     case DT_BFLOAT16:
     default:
-      CHECK(false) << "MaxBytesPerElement not implemented for dtype: " << dt;
+      LOG(FATAL) << "MaxBytesPerElement not implemented for dtype: " << dt;
   }
   return 0;
 }
 
 template <>
-Status TensorSliceWriter::SaveData(const string* data, int64 num_elements,
+Status TensorSliceWriter::SaveData(const tstring* data, int64_t num_elements,
                                    SavedSlice* ss) {
   size_t size_bound = ss->ByteSize() + kTensorProtoHeaderBytes +
                       (num_elements * MaxBytesPerElement(DT_INT32));
-  for (int64 i = 0; i < num_elements; ++i) {
+  for (int64_t i = 0; i < num_elements; ++i) {
     size_bound += data[i].size();
   }
   if (size_bound > kMaxMessageBytes) {

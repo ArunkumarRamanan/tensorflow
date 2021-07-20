@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_FILL_FUNCTOR_H_
-#define TENSORFLOW_KERNELS_FILL_FUNCTOR_H_
+#ifndef TENSORFLOW_CORE_KERNELS_FILL_FUNCTOR_H_
+#define TENSORFLOW_CORE_KERNELS_FILL_FUNCTOR_H_
 
 #define EIGEN_USE_THREADS
 
@@ -45,13 +45,52 @@ struct SetZeroFunctor<Eigen::ThreadPoolDevice, T> {
                   typename TTypes<T>::Flat out);
 };
 
+
 template <>
-struct SetZeroFunctor<Eigen::ThreadPoolDevice, string> {
+struct SetZeroFunctor<Eigen::ThreadPoolDevice, tstring> {
   void operator()(const Eigen::ThreadPoolDevice& d,
-                  typename TTypes<string>::Flat out);
+                  typename TTypes<tstring>::Flat out);
+};
+
+template <typename Device, typename T>
+struct SetOneFunctor {
+  // Computes on device "d": out = out.setOne(),
+  void operator()(const Device& d, typename TTypes<T>::Flat out);
+};
+
+// Partial specialization of SetOneFunctor<Device=Eigen::ThreadPoolDevice, T>.
+template <typename T>
+struct SetOneFunctor<Eigen::ThreadPoolDevice, T> {
+  void operator()(const Eigen::ThreadPoolDevice& d,
+                  typename TTypes<T>::Flat out);
+};
+
+
+template <>
+struct SetOneFunctor<Eigen::ThreadPoolDevice, tstring> {
+  void operator()(const Eigen::ThreadPoolDevice& d,
+                  typename TTypes<tstring>::Flat out);
+};
+
+template <typename Device, typename T>
+struct SetNanFunctor {
+  void operator()(const Device& d, typename TTypes<T>::Flat out);
+};
+
+// Partial specialization of SetNanFunctor<Device=Eigen::ThreadPoolDevice, T>.
+template <typename T>
+struct SetNanFunctor<Eigen::ThreadPoolDevice, T> {
+  void operator()(const Eigen::ThreadPoolDevice& d,
+                  typename TTypes<T>::Flat out);
+};
+
+template <>
+struct SetNanFunctor<Eigen::ThreadPoolDevice, tstring> {
+  void operator()(const Eigen::ThreadPoolDevice& d,
+                  typename TTypes<tstring>::Flat out);
 };
 
 }  // namespace functor
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_FILL_FUNCTOR_H_
+#endif  // TENSORFLOW_CORE_KERNELS_FILL_FUNCTOR_H_

@@ -132,14 +132,16 @@ class SparseSparseBinaryOpShared : public OpKernel {
 
     // Validations.
     OP_REQUIRES(
-        ctx, TensorShapeUtils::IsMatrix(a_indices_t->shape()) &&
-                 TensorShapeUtils::IsMatrix(b_indices_t->shape()),
+        ctx,
+        TensorShapeUtils::IsMatrix(a_indices_t->shape()) &&
+            TensorShapeUtils::IsMatrix(b_indices_t->shape()),
         errors::InvalidArgument("Inputs a_indices and b_indices should be "
                                 "matrices but received shapes: ",
                                 a_indices_t->shape().DebugString(), ", ",
                                 b_indices_t->shape().DebugString()));
-    OP_REQUIRES(ctx, TensorShapeUtils::IsVector(a_values_t->shape()) &&
-                         TensorShapeUtils::IsVector(b_values_t->shape()),
+    OP_REQUIRES(ctx,
+                TensorShapeUtils::IsVector(a_values_t->shape()) &&
+                    TensorShapeUtils::IsVector(b_values_t->shape()),
                 errors::InvalidArgument(
                     "Inputs a_values and b_values should be vectors "
                     "but received shapes: ",
@@ -148,6 +150,7 @@ class SparseSparseBinaryOpShared : public OpKernel {
 
     const int64 a_nnz = a_indices_t->dim_size(0);
     const int64 b_nnz = b_indices_t->dim_size(0);
+
     const auto a_values = a_values_t->vec<T>();
     const auto b_values = b_values_t->vec<T>();
 
@@ -157,12 +160,21 @@ class SparseSparseBinaryOpShared : public OpKernel {
                                 " non-empty input values, got ",
                                 a_values.size(), " and ", b_values.size()));
 
-    OP_REQUIRES(ctx, TensorShapeUtils::IsVector(a_shape_t->shape()) &&
-                         TensorShapeUtils::IsVector(b_shape_t->shape()),
+    OP_REQUIRES(ctx,
+                TensorShapeUtils::IsVector(a_shape_t->shape()) &&
+                    TensorShapeUtils::IsVector(b_shape_t->shape()),
                 errors::InvalidArgument(
                     "Input shapes should be a vector but received shapes ",
                     a_shape_t->shape().DebugString(), " and ",
                     b_shape_t->shape().DebugString()));
+    const int num_dims = a_indices_t->dim_size(1);
+    OP_REQUIRES(
+        ctx, a_shape_t->NumElements() == num_dims,
+        errors::InvalidArgument("Second dimension of a_indices and length of "
+                                "a_shape must match, got ",
+                                num_dims, " and ", a_shape_t->NumElements()));
+    OP_REQUIRES(ctx, num_dims > 0,
+                errors::InvalidArgument("Tensors must not be empty"));
     OP_REQUIRES(ctx, a_shape_t->IsSameSize(*b_shape_t),
                 errors::InvalidArgument(
                     "Operands do not have the same ranks; got shapes: ",
@@ -177,7 +189,6 @@ class SparseSparseBinaryOpShared : public OpKernel {
                                           " for dimension ", i));
     }
 
-    const int num_dims = a_indices_t->dim_size(1);
     const auto a_indices_mat = a_indices_t->matrix<int64>();
     const auto b_indices_mat = b_indices_t->matrix<int64>();
     std::vector<T> a_augmented_values, b_augmented_values;
@@ -209,7 +220,7 @@ class SparseSparseBinaryOpShared : public OpKernel {
     // allocate_temp() would've given us aligned storage, but we do not know
     // their sizes in advance, so we couldn't use allocate_temp() anyway.
     //
-    // TODO(zongheng): measure if it's worthwile to somehow force alignment.
+    // TODO(zongheng): measure if it's worthwhile to somehow force alignment.
     using UnalignedTensorMap =
         Eigen::TensorMap<Eigen::Tensor<const T, 1, Eigen::RowMajor>,
                          Eigen::Unaligned>;

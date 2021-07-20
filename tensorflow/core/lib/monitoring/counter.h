@@ -13,20 +13,74 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_LIB_MONITORING_COUNTER_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_LIB_MONITORING_COUNTER_H_
+#ifndef TENSORFLOW_CORE_LIB_MONITORING_COUNTER_H_
+#define TENSORFLOW_CORE_LIB_MONITORING_COUNTER_H_
+
+// clang-format off
+// Required for IS_MOBILE_PLATFORM
+#include "tensorflow/core/platform/platform.h"
+// clang-format on
 
 // We replace this implementation with a null implementation for mobile
 // platforms.
-#include "tensorflow/core/platform/platform.h"
 #ifdef IS_MOBILE_PLATFORM
-#include "tensorflow/core/lib/monitoring/mobile_counter.h"
-#else
+
+#include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/platform/macros.h"
+#include "tensorflow/core/platform/types.h"
+
+namespace tensorflow {
+namespace monitoring {
+
+// CounterCell which has a null implementation.
+class CounterCell {
+ public:
+  CounterCell() {}
+  ~CounterCell() {}
+
+  void IncrementBy(int64 step) {}
+  int64 value() const { return 0; }
+
+ private:
+  TF_DISALLOW_COPY_AND_ASSIGN(CounterCell);
+};
+
+// Counter which has a null implementation.
+template <int NumLabels>
+class Counter {
+ public:
+  ~Counter() {}
+
+  template <typename... MetricDefArgs>
+  static Counter* New(MetricDefArgs&&... metric_def_args) {
+    return new Counter<NumLabels>();
+  }
+
+  template <typename... Labels>
+  CounterCell* GetCell(const Labels&... labels) {
+    return &default_counter_cell_;
+  }
+
+  Status GetStatus() { return Status::OK(); }
+
+ private:
+  Counter() {}
+
+  CounterCell default_counter_cell_;
+
+  TF_DISALLOW_COPY_AND_ASSIGN(Counter);
+};
+
+}  // namespace monitoring
+}  // namespace tensorflow
+
+#else  // IS_MOBILE_PLATFORM
 
 #include <array>
 #include <atomic>
 #include <map>
 
+#include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/monitoring/collection_registry.h"
 #include "tensorflow/core/lib/monitoring/metric_def.h"
 #include "tensorflow/core/platform/logging.h"
@@ -48,7 +102,7 @@ namespace monitoring {
 // This class is thread-safe.
 class CounterCell {
  public:
-  CounterCell(const int64 value) : value_(value) {}
+  explicit CounterCell(int64 value) : value_(value) {}
   ~CounterCell() {}
 
   // Atomically increments the value by step.
@@ -95,7 +149,9 @@ class Counter {
   // Retrieves the cell for the specified labels, creating it on demand if
   // not already present.
   template <typename... Labels>
-  CounterCell* GetCell(const Labels&... labels) LOCKS_EXCLUDED(mu_);
+  CounterCell* GetCell(const Labels&... labels) TF_LOCKS_EXCLUDED(mu_);
+
+  Status GetStatus() { return status_; }
 
  private:
   explicit Counter(
@@ -109,9 +165,18 @@ class Counter {
               for (const auto& cell : cells_) {
                 metric_collector.CollectValue(cell.first, cell.second.value());
               }
-            })) {}
+            })) {
+    if (registration_handle_) {
+      status_ = Status::OK();
+    } else {
+      status_ = Status(tensorflow::error::Code::ALREADY_EXISTS,
+                       "Another metric with the same name already exists.");
+    }
+  }
 
   mutable mutex mu_;
+
+  Status status_;
 
   // The metric definition. This will be used to identify the metric when we
   // register it for collection.
@@ -120,7 +185,7 @@ class Counter {
   std::unique_ptr<CollectionRegistry::RegistrationHandle> registration_handle_;
 
   using LabelArray = std::array<string, NumLabels>;
-  std::map<LabelArray, CounterCell> cells_ GUARDED_BY(mu_);
+  std::map<LabelArray, CounterCell> cells_ TF_GUARDED_BY(mu_);
 
   TF_DISALLOW_COPY_AND_ASSIGN(Counter);
 };
@@ -148,14 +213,14 @@ Counter<NumLabels>* Counter<NumLabels>::New(
 template <int NumLabels>
 template <typename... Labels>
 CounterCell* Counter<NumLabels>::GetCell(const Labels&... labels)
-    LOCKS_EXCLUDED(mu_) {
+    TF_LOCKS_EXCLUDED(mu_) {
   // Provides a more informative error message than the one during array
   // construction below.
   static_assert(sizeof...(Labels) == NumLabels,
                 "Mismatch between Counter<NumLabels> and number of labels "
                 "provided in GetCell(...).");
 
-  const LabelArray& label_array = {labels...};
+  const LabelArray& label_array = {{labels...}};
   mutex_lock l(mu_);
   const auto found_it = cells_.find(label_array);
   if (found_it != cells_.end()) {
@@ -172,4 +237,4 @@ CounterCell* Counter<NumLabels>::GetCell(const Labels&... labels)
 }  // namespace tensorflow
 
 #endif  // IS_MOBILE_PLATFORM
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_LIB_MONITORING_COUNTER_H_
+#endif  // TENSORFLOW_CORE_LIB_MONITORING_COUNTER_H_

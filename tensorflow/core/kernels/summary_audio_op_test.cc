@@ -18,7 +18,6 @@ limitations under the License.
 
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/fake_input.h"
-#include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/summary.pb.h"
@@ -82,7 +81,7 @@ TEST_F(SummaryAudioOpTest, Basic3D) {
   MakeOp(kMaxOutputs);
 
   // Feed and run
-  AddInputFromArray<string>(TensorShape({}), {"tag"});
+  AddInputFromArray<tstring>(TensorShape({}), {"tag"});
   AddInputFromArray<float>(TensorShape({4, 2, 2}),
                            {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                             0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
@@ -94,7 +93,7 @@ TEST_F(SummaryAudioOpTest, Basic3D) {
   Tensor* out_tensor = GetOutput(0);
   ASSERT_EQ(0, out_tensor->dims());
   Summary summary;
-  ParseProtoUnlimited(&summary, out_tensor->scalar<string>()());
+  ParseProtoUnlimited(&summary, out_tensor->scalar<tstring>()());
 
   CheckAndRemoveEncodedAudio(&summary);
   EXPECT_SummaryMatches(summary, R"(
@@ -116,7 +115,7 @@ TEST_F(SummaryAudioOpTest, Basic2D) {
   MakeOp(kMaxOutputs);
 
   // Feed and run
-  AddInputFromArray<string>(TensorShape({}), {"tag"});
+  AddInputFromArray<tstring>(TensorShape({}), {"tag"});
   AddInputFromArray<float>(TensorShape({4, 4}),
                            {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                             0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
@@ -128,7 +127,7 @@ TEST_F(SummaryAudioOpTest, Basic2D) {
   Tensor* out_tensor = GetOutput(0);
   ASSERT_EQ(0, out_tensor->dims());
   Summary summary;
-  ParseProtoUnlimited(&summary, out_tensor->scalar<string>()());
+  ParseProtoUnlimited(&summary, out_tensor->scalar<tstring>()());
 
   CheckAndRemoveEncodedAudio(&summary);
   EXPECT_SummaryMatches(summary, R"(
@@ -141,6 +140,38 @@ TEST_F(SummaryAudioOpTest, Basic2D) {
     value { tag: 'tag/audio/2'
             audio { content_type: "audio/wav" sample_rate: 44100 num_channels: 1
                     length_frames: 4 } }
+  )");
+}
+
+TEST_F(SummaryAudioOpTest, ZeroLength) {
+  const float kSampleRate = 44100.0f;
+  const int kMaxOutputs = 3;
+  MakeOp(kMaxOutputs);
+
+  // Feed and run
+  AddInputFromArray<tstring>(TensorShape({}), {"tag"});
+  AddInputFromArray<float>(TensorShape({4, 0}), {});
+  AddInputFromArray<float>(TensorShape({}), {kSampleRate});
+
+  TF_ASSERT_OK(RunOpKernel());
+
+  // Check the output size.
+  Tensor* out_tensor = GetOutput(0);
+  ASSERT_EQ(0, out_tensor->dims());
+  Summary summary;
+  ParseProtoUnlimited(&summary, out_tensor->scalar<tstring>()());
+
+  CheckAndRemoveEncodedAudio(&summary);
+  EXPECT_SummaryMatches(summary, R"(
+    value { tag: 'tag/audio/0'
+            audio { content_type: "audio/wav" sample_rate: 44100 num_channels: 1
+                    length_frames: 0 } }
+    value { tag: 'tag/audio/1'
+            audio { content_type: "audio/wav" sample_rate: 44100 num_channels: 1
+                    length_frames: 0 } }
+    value { tag: 'tag/audio/2'
+            audio { content_type: "audio/wav" sample_rate: 44100 num_channels: 1
+                    length_frames: 0 } }
   )");
 }
 

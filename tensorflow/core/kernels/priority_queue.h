@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_PRIORITY_QUEUE_H_
-#define TENSORFLOW_KERNELS_PRIORITY_QUEUE_H_
+#ifndef TENSORFLOW_CORE_KERNELS_PRIORITY_QUEUE_H_
+#define TENSORFLOW_CORE_KERNELS_PRIORITY_QUEUE_H_
 
 #include <deque>
 #include <queue>
@@ -31,7 +31,7 @@ limitations under the License.
 
 namespace tensorflow {
 
-using PriorityTensorPair = std::pair<int64, PersistentTensor>;
+using PriorityTensorPair = std::pair<int64, Tensor>;
 
 struct ComparePriorityTensorPair {
   // 0 is a higher priority than 1, -MAX_LONG is a higher priority
@@ -68,7 +68,7 @@ class PriorityQueue
   Status MatchesPriorityNodeDefTypes(const NodeDef& node_def) const;
   Status MatchesPriorityNodeDefShapes(const NodeDef& node_def) const;
 
-  int32 size() override {
+  int32 size() const override {
     mutex_lock lock(mu_);
     return queues_[0].size();
   }
@@ -78,16 +78,16 @@ class PriorityQueue
 
   // Helper for dequeuing a single element from queues_.
   void DequeueLocked(OpKernelContext* ctx, Tuple* tuple)
-      EXCLUSIVE_LOCKS_REQUIRED(mu_);
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   static Status GetElementComponentFromBatch(const Tuple& tuple, int index,
                                              int component,
                                              OpKernelContext* ctx,
-                                             PersistentTensor* out_element);
+                                             Tensor* out_element);
 
   TF_DISALLOW_COPY_AND_ASSIGN(PriorityQueue);
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_PRIORITY_QUEUE_H_
+#endif  // TENSORFLOW_CORE_KERNELS_PRIORITY_QUEUE_H_

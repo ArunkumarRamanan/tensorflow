@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #define EIGEN_USE_GPU
 
@@ -29,12 +29,19 @@ namespace tensorflow {
 typedef Eigen::GpuDevice GPUDevice;
 
 // Definition of the GPU implementations declared in softsign_op.cc.
-#define DEFINE_GPU_KERNELS(T)                      \
-  template struct functor::Softsign<GPUDevice, T>; \
+#define DEFINE_SOFTSIGN_GPU_KERNELS(T) \
+  template struct functor::Softsign<GPUDevice, T>;
+
+#define DEFINE_SOFTSIGN_GRAD_GPU_KERNELS(T) \
   template struct functor::SoftsignGrad<GPUDevice, T>;
 
-TF_CALL_GPU_NUMBER_TYPES(DEFINE_GPU_KERNELS);
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED) || \
+    !defined(MLIR_GENERATED_EXPERIMENTAL_KERNELS_ENABLED)
+TF_CALL_GPU_NUMBER_TYPES(DEFINE_SOFTSIGN_GPU_KERNELS);
+#endif
+
+TF_CALL_GPU_NUMBER_TYPES(DEFINE_SOFTSIGN_GRAD_GPU_KERNELS);
 
 }  // end namespace tensorflow
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM

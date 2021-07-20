@@ -15,9 +15,15 @@ limitations under the License.
 
 #include "tensorflow/core/util/util.h"
 
+#include <string>
+#include <vector>
+
+#include "absl/base/call_once.h"
+#include "tensorflow/core/framework/device_factory.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/util/env_var.h"
 
 namespace tensorflow {
 
@@ -85,7 +91,7 @@ void MovingAverage::AddValue(double v) {
 
 static char hex_char[] = "0123456789abcdef";
 
-string PrintMemory(const char* ptr, int n) {
+string PrintMemory(const char* ptr, size_t n) {
   string ret;
   ret.resize(n * 3);
   for (int i = 0; i < n; ++i) {
@@ -110,7 +116,7 @@ string SliceDebugString(const TensorShape& shape, const int64 flat) {
   }
 
   // Unflatten index
-  int64 left = flat;
+  int64_t left = flat;
   string result;
   for (int i = 0; i < dims; i++) {
     strings::StrAppend(&result, i ? "," : "[", left / strides[i]);
@@ -118,6 +124,46 @@ string SliceDebugString(const TensorShape& shape, const int64 flat) {
   }
   strings::StrAppend(&result, "]");
   return result;
+}
+
+bool IsMKLEnabled() {
+#ifndef INTEL_MKL
+  return false;
+#endif  // !INTEL_MKL
+  static absl::once_flag once;
+#ifdef ENABLE_MKL
+  // Keeping TF_DISABLE_MKL env variable for legacy reasons.
+  static bool oneDNN_disabled = false;
+  absl::call_once(once, [&] {
+    TF_CHECK_OK(ReadBoolFromEnvVar("TF_DISABLE_MKL", false, &oneDNN_disabled));
+    if (oneDNN_disabled) VLOG(2) << "TF-MKL: Disabling oneDNN";
+  });
+  return (!oneDNN_disabled);
+#else
+  static bool oneDNN_enabled = false;
+  absl::call_once(once, [&] {
+    TF_CHECK_OK(
+        ReadBoolFromEnvVar("TF_ENABLE_ONEDNN_OPTS", false, &oneDNN_enabled));
+    if (oneDNN_enabled) {
+      // Warn that this is not tested with GPU if there are GPUs available.
+      std::vector<std::string> devices;
+      Status s = DeviceFactory::ListAllPhysicalDevices(&devices);
+      std::string gpu_message = "";
+      for (const auto& device : devices) {
+        if (device.find("GPU") != std::string::npos) {
+          gpu_message =
+              "We do NOT recommend turning them on with GPUs in the system. ";
+          break;
+        }
+      }
+      LOG(INFO) << "Experimental oneDNN custom operations are on. "
+                << gpu_message
+                << "To turn them off, set the environment variable "
+                   "`TF_ENABLE_ONEDNN_OPTS=0`.";
+    }
+  });
+  return oneDNN_enabled;
+#endif  // ENABLE_MKL
 }
 
 }  // namespace tensorflow

@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_UTIL_TENSOR_SLICE_UTIL_H_
-#define TENSORFLOW_UTIL_TENSOR_SLICE_UTIL_H_
+#ifndef TENSORFLOW_CORE_UTIL_TENSOR_SLICE_UTIL_H_
+#define TENSORFLOW_CORE_UTIL_TENSOR_SLICE_UTIL_H_
 
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_slice.h"
@@ -55,7 +55,7 @@ struct CopyThatWorksWithStringPointer {
 // Eigen makes it extremely difficult to dereference a tensor of string* into
 // string, so we roll our own loop instead.
 template <>
-struct CopyThatWorksWithStringPointer<string> {
+struct CopyThatWorksWithStringPointer<tstring> {
   template <typename SrcTensor, typename DstTensor, typename Shape>
   static void Copy(const SrcTensor& s, Shape s_start, Shape len, DstTensor& d,
                    Shape d_start) {
@@ -110,7 +110,7 @@ struct CopyThatWorksWithStringPointer<Eigen::half> {
                     d(d_start[0] + i0, d_start[1] + i1, d_start[2] + i2,
                       d_start[3] + i3, d_start[4] + i4, d_start[5] + i5,
                       d_start[6] + i6, d_start[7] + i7) =
-                        Eigen::half_impl::raw_uint16_to_half(
+                        Eigen::numext::bit_cast<Eigen::half, uint16_t>(
                             s(s_start[0] + i0, s_start[1] + i1, s_start[2] + i2,
                               s_start[3] + i3, s_start[4] + i4, s_start[5] + i5,
                               s_start[6] + i6, s_start[7] + i7));
@@ -139,9 +139,9 @@ static bool CopyDataFromTensorSliceToTensorSlice(const TensorShape& shape,
                                                  const TensorSlice& slice_d,
                                                  const SrcT* ptr_s,
                                                  DstT* ptr_d) {
-  CHECK_LE(shape.dims(), kTensorSliceMaxRank) << "Only tensors of size up to "
-                                              << kTensorSliceMaxRank
-                                              << " are supported";
+  CHECK_LE(shape.dims(), kTensorSliceMaxRank)
+      << "Only tensors of size up to " << kTensorSliceMaxRank
+      << " are supported";
   // We need to compute the intersection of the two slices.
   TensorSlice inter;
   if (!slice_s.Intersect(slice_d, &inter)) {
@@ -188,4 +188,4 @@ static bool CopyDataFromTensorSliceToTensorSlice(const TensorShape& shape,
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_UTIL_TENSOR_SLICE_UTIL_H_
+#endif  // TENSORFLOW_CORE_UTIL_TENSOR_SLICE_UTIL_H_

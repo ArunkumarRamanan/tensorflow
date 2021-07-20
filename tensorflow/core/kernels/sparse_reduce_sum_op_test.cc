@@ -21,6 +21,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/kernels/ops_testutil.h"
+#include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -51,8 +52,10 @@ TEST_F(SparseReduceSumOpTest, SimpleReduce) {
   // [3   4]
 
   const auto indices_shape = TensorShape({4, 2});
-  const gtl::ArraySlice<int64> indices = {0, 1, 1, 0, 2, 0, 2, 1};
-  const gtl::ArraySlice<int64> shape = {3, 2};
+  std::initializer_list<int64> in{0, 1, 1, 0, 2, 0, 2, 1};
+  const gtl::ArraySlice<int64> indices(in);
+  std::initializer_list<int64> sh{3, 2};
+  const gtl::ArraySlice<int64> shape(sh);
 
   AddInputFromArray<int64>(indices_shape, indices);
   AddInputFromArray<float>(TensorShape({4}), {1, 2, 3, 4});
@@ -91,8 +94,10 @@ TEST_F(SparseReduceSumSparseOpTest, SimpleReduce) {
   // [3   4]
 
   const auto indices_shape = TensorShape({4, 2});
-  const gtl::ArraySlice<int64> indices = {0, 1, 1, 0, 2, 0, 2, 1};
-  const gtl::ArraySlice<int64> shape = {3, 2};
+  std::initializer_list<int64> in{0, 1, 1, 0, 2, 0, 2, 1};
+  const gtl::ArraySlice<int64> indices(in);
+  std::initializer_list<int64> sh{3, 2};
+  const gtl::ArraySlice<int64> shape(sh);
 
   AddInputFromArray<int64>(indices_shape, indices);
   AddInputFromArray<float>(TensorShape({4}), {2, 2, 3, 4});

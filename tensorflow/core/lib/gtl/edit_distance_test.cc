@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/core/lib/gtl/edit_distance.h"
 
+#include <cctype>
 #include <vector>
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/test.h"
@@ -37,6 +38,8 @@ class LevenshteinDistanceTest : public ::testing::Test {
   std::string grandmother_;
   std::string lower_;
   std::string upper_;
+  std::vector<char> ebab_;
+  std::vector<char> abcd_;
 
   void SetUp() override {
     s1_ = "1";
@@ -48,11 +51,18 @@ class LevenshteinDistanceTest : public ::testing::Test {
     grandmother_ = "grandmother";
     lower_ = "lower case";
     upper_ = "UPPER case";
+    ebab_ = {'e', 'b', 'a', 'b'};
+    abcd_ = {'a', 'b', 'c', 'd'};
   }
 };
 
 TEST_F(LevenshteinDistanceTest, BothEmpty) {
   ASSERT_EQ(LevenshteinDistance(empty_, empty_, std::equal_to<char>()), 0);
+}
+
+TEST_F(LevenshteinDistanceTest, Symmetry) {
+  ASSERT_EQ(LevenshteinDistance(ebab_, abcd_, std::equal_to<char>()), 3);
+  ASSERT_EQ(LevenshteinDistance(abcd_, ebab_, std::equal_to<char>()), 3);
 }
 
 TEST_F(LevenshteinDistanceTest, OneEmpty) {
@@ -99,7 +109,8 @@ TEST_F(LevenshteinDistanceTest, Vectors) {
       6);
 }
 
-static void BM_EditDistanceHelper(int n, int len, bool completely_different) {
+static void BM_EditDistanceHelper(::testing::benchmark::State& state, int len,
+                                  bool completely_different) {
   string a =
       "The quick brown fox jumped over the lazy dog and on and on and on"
       " Every good boy deserves fudge.  In fact, this is a very long sentence  "
@@ -113,18 +124,18 @@ static void BM_EditDistanceHelper(int n, int len, bool completely_different) {
       b[i]++;
     }
   }
-  while (n-- > 0) {
+  for (auto s : state) {
     LevenshteinDistance(gtl::ArraySlice<char>(a.data(), len),
                         gtl::ArraySlice<char>(b.data(), len),
                         std::equal_to<char>());
   }
 }
 
-static void BM_EditDistanceSame(int n, int len) {
-  BM_EditDistanceHelper(n, len, false);
+static void BM_EditDistanceSame(::testing::benchmark::State& state) {
+  BM_EditDistanceHelper(state, state.range(0), false);
 }
-static void BM_EditDistanceDiff(int n, int len) {
-  BM_EditDistanceHelper(n, len, true);
+static void BM_EditDistanceDiff(::testing::benchmark::State& state) {
+  BM_EditDistanceHelper(state, state.range(0), true);
 }
 
 BENCHMARK(BM_EditDistanceSame)->Arg(5);

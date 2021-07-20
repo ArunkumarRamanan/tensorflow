@@ -65,15 +65,14 @@ TEST(CleanupTest, Release) {
 TEST(FinallyTest, TypeErasedWithoutFactory) {
   string s = "active";
   {
-    AnyCleanup s_cleaner([&s]{ s.append(" clean"); });
+    AnyCleanup s_cleaner([&s] { s.append(" clean"); });
     EXPECT_EQ("active", s);
   }
   EXPECT_EQ("active clean", s);
 }
 
 struct Appender {
-  Appender(string* s, const string& msg)
-      : s_(s), msg_(msg) {}
+  Appender(string* s, const string& msg) : s_(s), msg_(msg) {}
   void operator()() const { s_->append(msg_); }
   string* s_;
   string msg_;
@@ -163,7 +162,12 @@ class CleanupReferenceTest : public ::testing::Test {
     int* i;
     F(int* cp, int* i) : cp(cp), i(i) {}
     F(const F& o) : cp(o.cp), i(o.i) { ++*cp; }
-    F& operator=(const F& o) { cp = o.cp; i = o.i; ++*cp; return *this; }
+    F& operator=(const F& o) {
+      cp = o.cp;
+      i = o.i;
+      ++*cp;
+      return *this;
+    }
     F(F&&) = default;
     F& operator=(F&&) = default;
     void operator()() const { ++*i; }
@@ -263,46 +267,46 @@ volatile int i;
 void Incr(volatile int* ip) { ++*ip; }
 void Incr() { Incr(&i); }
 
-void BM_Cleanup(int iters) {
-  while (iters--) {
+void BM_Cleanup(::testing::benchmark::State& state) {
+  for (auto s : state) {
     auto fin = gtl::MakeCleanup([] { Incr(); });
   }
 }
 BENCHMARK(BM_Cleanup);
 
-void BM_AnyCleanup(int iters) {
-  while (iters--) {
+void BM_AnyCleanup(::testing::benchmark::State& state) {
+  for (auto s : state) {
     AnyCleanup fin = gtl::MakeCleanup([] { Incr(); });
   }
 }
 BENCHMARK(BM_AnyCleanup);
 
-void BM_AnyCleanupNoFactory(int iters) {
-  while (iters--) {
-    AnyCleanup fin([]{Incr();});
+void BM_AnyCleanupNoFactory(::testing::benchmark::State& state) {
+  for (auto s : state) {
+    AnyCleanup fin([] { Incr(); });
   }
 }
 BENCHMARK(BM_AnyCleanupNoFactory);
 
-void BM_CleanupBound(int iters) {
+void BM_CleanupBound(::testing::benchmark::State& state) {
   volatile int* ip = &i;
-  while (iters--) {
+  for (auto s : state) {
     auto fin = gtl::MakeCleanup([ip] { Incr(ip); });
   }
 }
 BENCHMARK(BM_CleanupBound);
 
-void BM_AnyCleanupBound(int iters) {
+void BM_AnyCleanupBound(::testing::benchmark::State& state) {
   volatile int* ip = &i;
-  while (iters--) {
+  for (auto s : state) {
     AnyCleanup fin = gtl::MakeCleanup([ip] { Incr(ip); });
   }
 }
 BENCHMARK(BM_AnyCleanupBound);
 
-void BM_AnyCleanupNoFactoryBound(int iters) {
+void BM_AnyCleanupNoFactoryBound(::testing::benchmark::State& state) {
   volatile int* ip = &i;
-  while (iters--) {
+  for (auto s : state) {
     AnyCleanup fin([ip] { Incr(ip); });
   }
 }
