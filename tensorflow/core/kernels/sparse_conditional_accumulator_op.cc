@@ -34,14 +34,28 @@ class SparseConditionalAccumulatorOp : public ConditionalAccumulatorBaseOp {
   Creator GetCreator() const override {
     return [this](ConditionalAccumulatorBase** ret) {
       SparseConditionalAccumulator<Device, T>* accumulator =
-          new SparseConditionalAccumulator<Device, T>(dtype_, shape_,
-                                                      cinfo_.name());
+          new SparseConditionalAccumulator<Device, T>(
+              dtype_, shape_, cinfo_.name(), reduction_type_);
       *ret = accumulator;
-      return Status::OK();
+      return absl::OkStatus();
     };
   }
 
-  TF_DISALLOW_COPY_AND_ASSIGN(SparseConditionalAccumulatorOp);
+  // TODO(tanzheny): actually switch it to resource. You won't be able to use
+  // it with cond2 otherwise.
+  absl::Status CheckSignature(OpKernelContext* ctx) override {
+    TF_RETURN_IF_ERROR(ctx->MatchSignature({}, {DT_STRING_REF}));
+    return absl::OkStatus();
+  }
+
+  void SetHandleToOutput(OpKernelContext* ctx)
+      TF_SHARED_LOCKS_REQUIRED(mu_) override {
+    ctx->set_output_ref(0, &mu_, &accumulator_);
+  }
+
+  SparseConditionalAccumulatorOp(const SparseConditionalAccumulatorOp&) =
+      delete;
+  void operator=(const SparseConditionalAccumulatorOp&) = delete;
 };
 
 #define REGISTER_KERNELS(type, dev)                            \
@@ -70,17 +84,18 @@ class SparseAccumulatorApplyGradientOp
       : ConditionalAccumulatorBaseApplyGradientOp(context) {}
 
  protected:
-  void CheckSignature(OpKernelContext* ctx,
-                      ConditionalAccumulatorBase* accumulator) override {
-    // Check input signature
+  DataTypeVector GetExpectedInputs(
+      ConditionalAccumulatorBase* accumulator) override {
     DataTypeVector expected_inputs = {DT_STRING_REF, DT_INT64, DT_INT64};
     expected_inputs.push_back(accumulator->dtype());
     expected_inputs.push_back(DT_INT64);
-    OP_REQUIRES_OK(ctx, ctx->MatchSignature(expected_inputs, {}));
+    return expected_inputs;
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(SparseAccumulatorApplyGradientOp);
+  SparseAccumulatorApplyGradientOp(const SparseAccumulatorApplyGradientOp&) =
+      delete;
+  void operator=(const SparseAccumulatorApplyGradientOp&) = delete;
 };
 
 REGISTER_KERNEL_BUILDER(
@@ -103,13 +118,21 @@ class SparseAccumulatorTakeGradientOp
                       DoneCallback callback) override {
     // Check signature
     OP_REQUIRES_OK_ASYNC(
-        ctx, ctx->MatchSignature({DT_STRING_REF, DT_INT32},
-                                 {DT_INT64, accumulator->dtype(), DT_INT64}),
+        ctx,
+        ctx->MatchSignature({DT_STRING_REF, DT_INT32},
+                            {DT_INT64, accumulator->dtype(), DT_INT64}),
         callback);
   }
 
+  DataTypeVector GetExpectedInputs(
+      ConditionalAccumulatorBase* accumulator) override {
+    return {DT_STRING_REF, DT_INT32};
+  }
+
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(SparseAccumulatorTakeGradientOp);
+  SparseAccumulatorTakeGradientOp(const SparseAccumulatorTakeGradientOp&) =
+      delete;
+  void operator=(const SparseAccumulatorTakeGradientOp&) = delete;
 };
 
 REGISTER_KERNEL_BUILDER(

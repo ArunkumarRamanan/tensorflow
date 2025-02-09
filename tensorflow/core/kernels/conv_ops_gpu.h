@@ -16,68 +16,72 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_CONV_OPS_GPU_H_
 #define TENSORFLOW_CORE_KERNELS_CONV_OPS_GPU_H_
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #include <tuple>
 #include <unordered_map>
+
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/kernels/gpu_utils.h"
+#include "tensorflow/core/lib/gtl/inlined_vector.h"
 #include "tensorflow/core/lib/hash/hash.h"
-#include "tensorflow/core/platform/stream_executor.h"
+#include "tensorflow/core/util/autotune_maps/conv_parameters.h"
+#include "tensorflow/core/util/tensor_format.h"
 
 namespace tensorflow {
 
-// TODO(zhengxq): move this to gpu_util.h. The use of such wrappers is wide
-// spread.
-template <typename T>
-inline perftools::gputools::DeviceMemory<T> AsDeviceMemory(const T* cuda_memory,
-                                                           uint64 size) {
-  perftools::gputools::DeviceMemoryBase wrapped(const_cast<T*>(cuda_memory),
-                                                size * sizeof(T));
-  perftools::gputools::DeviceMemory<T> typed(wrapped);
-  return typed;
-}
+bool ComputeInNhwcEnabled(DataType data_type, se::Stream* stream,
+                          bool use_4d_tensor = true);
 
-// Get the Cudnn workspace limit from the environment variable, which is in MB.
+// Get the Dnn workspace limit from the environment variable, which is in MB.
 // Return the workspace memory limit in bytes. If no value is set, return the
 // default value.
-int64 GetCudnnWorkspaceLimit(const string& envvar_in_mb,
-                             int64 default_value_in_bytes);
+int64 GetDnnWorkspaceLimit(const string& envvar_in_mb,
+                           int64_t default_value_in_bytes);
+
+// Call the Dnn workspace limit from TF_CUDNN_WORKSPACE_LIMIT_IN_MB or default.
+int64 GetDnnWorkspaceLimitOrDefault();
 
 // A class to provide scratch-space allocator for Stream-Executor Cudnn
 // callback. TensorFlow is responsible for releasing the temporary buffers after
 // the kernel finishes.
-class CudnnScratchAllocator : public perftools::gputools::ScratchAllocator {
+class DnnScratchAllocator : public se::ScratchAllocator {
  public:
-  virtual ~CudnnScratchAllocator() {}
-  CudnnScratchAllocator(int64 memory_limit, OpKernelContext* context)
+  virtual ~DnnScratchAllocator() {}
+  DnnScratchAllocator(int64_t memory_limit, OpKernelContext* context)
       : memory_limit_(memory_limit), total_byte_size_(0), context_(context) {}
-  virtual int64 GetMemoryLimitInBytes(
-      perftools::gputools::Stream* stream) override {
-    return memory_limit_;
-  }
-  virtual perftools::gputools::port::StatusOr<
-      perftools::gputools::DeviceMemory<uint8>>
-  AllocateBytes(perftools::gputools::Stream* stream, int64 byte_size) override {
+  int64 GetMemoryLimitInBytes() override { return memory_limit_; }
+  tsl::StatusOr<se::DeviceMemory<uint8>> AllocateBytes(
+      int64_t byte_size) override {
     Tensor temporary_memory;
+    if (byte_size < 0) {
+      return tsl::Status{absl::StatusCode::kInvalidArgument,
+                         "Requested negative byte size!"};
+    }
     if (byte_size > memory_limit_) {
-      return perftools::gputools::port::StatusOr<
-          perftools::gputools::DeviceMemory<uint8>>();
+      return tsl::Status{absl::StatusCode::kUnavailable,
+                         absl::StrCat("Requested memory size (", byte_size,
+                                      ") exceeds the max memory limit (",
+                                      memory_limit_, ").")};
     }
     AllocationAttributes allocation_attr;
-    allocation_attr.no_retry_on_failure = true;
+    allocation_attr.retry_on_failure = false;
     Status allocation_status(context_->allocate_temp(
         DT_UINT8, TensorShape({byte_size}), &temporary_memory,
         AllocatorAttributes(), allocation_attr));
     if (!allocation_status.ok()) {
-      return perftools::gputools::port::StatusOr<
-          perftools::gputools::DeviceMemory<uint8>>();
+      return tsl::Status{
+          absl::StatusCode::kUnavailable,
+          absl::StrCat("Failed to allocate the requested memory size (",
+                       byte_size, ").")};
     }
     // Hold the reference of the allocated tensors until the end of the
     // allocator.
     allocated_tensors_.push_back(temporary_memory);
     total_byte_size_ += byte_size;
-    return perftools::gputools::port::StatusOr<
-        perftools::gputools::DeviceMemory<uint8>>(
+    return tsl::StatusOr<se::DeviceMemory<uint8>>(
         AsDeviceMemory(temporary_memory.flat<uint8>().data(),
                        temporary_memory.flat<uint8>().size()));
   }
@@ -90,129 +94,120 @@ class CudnnScratchAllocator : public perftools::gputools::ScratchAllocator {
   std::vector<Tensor> allocated_tensors_;
 };
 
-// Encapsulate all the shape information that is used in both forward and
-// backward conv operations.
-class ConvParameters {
- public:
-  ConvParameters(int64 batch, int64 in_depths, int64 in_rows, int64 in_cols,
-                 int64 out_depths, int64 filter_rows, int64 filter_cols,
-                 int64 stride_rows, int64 stride_cols, int64 padding_rows,
-                 int64 padding_cols, int device_id)
-      : batch_(batch),
-        in_depths_(in_depths),
-        in_rows_(in_rows),
-        in_cols_(in_cols),
-        out_depths_(out_depths),
-        filter_rows_(filter_rows),
-        filter_cols_(filter_cols),
-        stride_rows_(stride_rows),
-        stride_cols_(stride_cols),
-        padding_rows_(padding_rows),
-        padding_cols_(padding_cols),
-        device_id_(device_id) {
-    hash_code_ = batch;
-    hash_code_ = Hash64Combine(hash_code_, in_depths);
-    hash_code_ = Hash64Combine(hash_code_, in_rows);
-    hash_code_ = Hash64Combine(hash_code_, in_cols);
-    hash_code_ = Hash64Combine(hash_code_, out_depths);
-    hash_code_ = Hash64Combine(hash_code_, filter_rows);
-    hash_code_ = Hash64Combine(hash_code_, filter_cols);
-    hash_code_ = Hash64Combine(hash_code_, stride_rows);
-    hash_code_ = Hash64Combine(hash_code_, stride_cols);
-    hash_code_ = Hash64Combine(hash_code_, padding_rows);
-    hash_code_ = Hash64Combine(hash_code_, padding_cols);
-    hash_code_ = Hash64Combine(hash_code_, device_id);
-  }
-  bool operator==(const ConvParameters& other) const {
-    return this->get_data_as_tuple() == other.get_data_as_tuple();
-  }
-
-  bool operator!=(const ConvParameters& other) const {
-    return !(*this == other);
-  }
-  uint64 hash() const { return hash_code_; }
-
- private:
-  typedef std::tuple<int64, int64, int64, int64, int64, int64, int64, int64,
-                     int64, int64, int64, int>
-      DataType;
-
-  DataType get_data_as_tuple() const {
-    return std::make_tuple(batch_, in_depths_, in_rows_, in_cols_, out_depths_,
-                           filter_rows_, filter_cols_, stride_rows_,
-                           stride_cols_, padding_rows_, padding_cols_,
-                           device_id_);
-  }
-
-  int64 batch_;
-  int64 in_depths_;
-  int64 in_rows_;
-  int64 in_cols_;
-  int64 out_depths_;
-  int64 filter_rows_;
-  int64 filter_cols_;
-  int64 stride_rows_;
-  int64 stride_cols_;
-  int64 padding_rows_;
-  int64 padding_cols_;
-  int device_id_;
-  uint64 hash_code_;
-};
-
 typedef Eigen::GpuDevice GPUDevice;
 
-// A helper class that looks up the best autotuned config from parameters.
-template <typename Parameters, typename Config>
-class AutoTuneMap {
- public:
-  bool Find(const Parameters& params, Config* config) const {
-    mutex_lock lock(mu_);
-    auto iter = params_config_map_.find(params);
-    if (iter == params_config_map_.end()) {
-      return false;
+// Select an algorithm for the given convolution, either by running actual
+// autotuning with a cache, or by falling back to a default if
+// 'cudnn_use_autotune' is true and cuDNN is the statically-chosen DNN backend.
+template <typename T>
+StatusOr<AutotuneEntry<se::dnn::FusedConvOp>> AutotuneFusedConv(
+    bool cudnn_use_autotune,
+    AutotuneMap<ConvParameters, AutotuneEntry<se::dnn::FusedConvOp>>*
+        autotune_map,
+    const ConvParameters& params, OpKernelContext* ctx,
+    const se::dnn::BatchDescriptor& input_desc,
+    const se::dnn::FilterDescriptor& filter_desc,
+    const se::dnn::BatchDescriptor& bias_desc,
+    const se::dnn::BatchDescriptor& output_desc,
+    const se::dnn::ConvolutionDescriptor& conv_desc,
+    const se::dnn::ActivationMode activation_mode, double conv_input_scale,
+    double side_input_scale, double leakyrelu_alpha,
+    se::DeviceMemory<T> input_ptr, se::DeviceMemory<T> filter_ptr,
+    se::DeviceMemory<T> output_ptr, se::DeviceMemory<T> bias_ptr,
+    se::DeviceMemory<T> side_input_ptr, int64_t scratch_size);
+
+template <typename T>
+StatusOr<AutotuneEntry<se::dnn::ConvOp>> AutotuneUnfusedConv(
+    bool cudnn_use_autotune,
+    AutotuneMap<ConvParameters, AutotuneEntry<se::dnn::ConvOp>>* autotune_map,
+    const ConvParameters& conv_parameters, OpKernelContext* ctx,
+    se::dnn::ConvolutionKind kind, const se::dnn::BatchDescriptor& input_desc,
+    se::DeviceMemory<T> input_ptr, const se::dnn::FilterDescriptor& filter_desc,
+    se::DeviceMemory<T> filter_ptr,
+    const se::dnn::ConvolutionDescriptor& conv_desc,
+    const se::dnn::BatchDescriptor& output_desc, se::DeviceMemory<T> output_ptr,
+    int64_t scratch_size_limit);
+
+// Returns a pointer to the primary 'OpRunner' of 'runners' and allocated
+// scratch memory if allocatable; else a pointer to its fallback
+// no-scratch-space runner, and a null 'DeviceMemoryBase'.
+template <typename Sig>
+StatusOr<std::tuple<const se::dnn::OpRunner<Sig>*, se::DeviceMemoryBase>>
+AllocateScratchOrFallback(se::ScratchAllocator* scratch_allocator,
+                          const se::dnn::OpRunner<Sig>* primary,
+                          const se::dnn::OpRunner<Sig>* no_scratch_fallback) {
+  const se::dnn::OpRunner<Sig>* selected_runner = primary;
+
+  auto workspace_size = selected_runner->GetWorkspaceSize();
+
+  se::DeviceMemoryBase scratch_memory;
+  if (workspace_size > 0) {
+    auto scratch_or = scratch_allocator->AllocateBytes(workspace_size);
+    if (scratch_or.ok()) {
+      scratch_memory = scratch_or.value();
+    } else if ((selected_runner = no_scratch_fallback)) {
+      if (selected_runner->GetWorkspaceSize() > 0) {
+        return errors::Internal(
+            "No-scratch fallback runner requires nonzero scratch space");
+      }
+    } else {
+      return errors::Unknown(
+          "CUDNN failed to allocate the scratch space for the runner or to "
+          "find a working no-scratch runner.");
     }
-    *config = iter->second;
-    return true;
-  }
-  void Insert(const ConvParameters& params, const Config& config) {
-    mutex_lock lock(mu_);
-    params_config_map_[params] = config;
   }
 
- private:
-  AutoTuneMap() {}
+  return std::make_tuple(selected_runner, scratch_memory);
+}
 
-  template <class Group, class Params, class Cfg>
-  friend class AutoTuneSingleton;
+template <typename T>
+Status LaunchAutotunedConv(const AutotuneEntry<se::dnn::ConvOp>& autotune_entry,
+                           DnnScratchAllocator* scratch_allocator,
+                           se::dnn::ConvolutionKind kind, se::Stream* stream,
+                           const se::dnn::BatchDescriptor& input_desc,
+                           se::DeviceMemory<T> in_ptr,
+                           const se::dnn::FilterDescriptor& filter_desc,
+                           se::DeviceMemory<T> filter_ptr,
+                           const se::dnn::ConvolutionDescriptor& conv_desc,
+                           const se::dnn::BatchDescriptor& output_desc,
+                           se::DeviceMemory<T> out_ptr) {
+  if (!autotune_entry.is_algorithm_config()) {
+    const auto& runners = autotune_entry.GetOpRunners();
+    se::dnn::DataType element_type = se::dnn::ToDataType<T>::value;
+    se::dnn::ConvOp::Config config{kind,       element_type, element_type,
+                                   input_desc, filter_desc,  output_desc,
+                                   conv_desc};
+    TF_ASSIGN_OR_RETURN(auto* primary,
+                        runners.primary->GetOrCreateRunner(config, stream));
 
-  struct Hasher {
-    std::size_t operator()(const Parameters& parameter) const {
-      return parameter.hash();
+    const se::dnn::ConvRunner* no_scratch_fallback = nullptr;
+    if (runners.no_scratch_fallback) {
+      TF_ASSIGN_OR_RETURN(
+          no_scratch_fallback,
+          runners.no_scratch_fallback->GetOrCreateRunner(config, stream));
     }
-  };
-  mutable mutex mu_;
-  std::unordered_map<Parameters, Config, Hasher> params_config_map_
-      GUARDED_BY(mu_);
 
-  TF_DISALLOW_COPY_AND_ASSIGN(AutoTuneMap);
-};
-
-// A Singleton helper that manages the global autotune results by groups.
-// The caller specified arbitrary Group type that can distinguish between
-// different autotune results, even if their Parameters and Configs are the
-// same.
-template <class Group, typename Parameters, typename Config>
-class AutoTuneSingleton {
- public:
-  typedef AutoTuneMap<Parameters, Config> AutoTuneType;
-  static AutoTuneType* GetInstance() {
-    static AutoTuneType* instance = new AutoTuneType;
-    return instance;
+    TF_ASSIGN_OR_RETURN(auto runner_and_scratch,
+                        AllocateScratchOrFallback<se::dnn::ConvOp::Signature>(
+                            scratch_allocator, primary, no_scratch_fallback));
+    auto& runner = *std::get<const se::dnn::ConvRunner*>(runner_and_scratch);
+    return runner(stream, nullptr,
+                  std::get<se::DeviceMemoryBase>(runner_and_scratch), in_ptr,
+                  filter_ptr, out_ptr);
+  } else {
+    auto dnn = stream->parent()->AsDnn();
+    if (dnn == nullptr) {
+      return absl::InternalError("No DNN for stream.");
+    }
+    return dnn->ConvolveWithAlgorithm(
+        stream, kind, input_desc, in_ptr, filter_desc, filter_ptr, output_desc,
+        out_ptr, conv_desc, scratch_allocator,
+        autotune_entry.GetAlgorithmConfig(), nullptr);
   }
-};
+}
 
 }  // namespace tensorflow
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #endif  // TENSORFLOW_CORE_KERNELS_CONV_OPS_GPU_H_

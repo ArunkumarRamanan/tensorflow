@@ -14,11 +14,14 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/python/util/kernel_registry.h"
 
+#include "absl/log/log.h"
+#include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op.h"
+#include "tensorflow/core/framework/op_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/device_name_utils.h"
 
 namespace tensorflow {
@@ -48,8 +51,12 @@ string TryFindKernelClass(const string& serialized_node_def) {
     return "";
   }
   string class_name = "";
-  tensorflow::FindKernelDef(tensorflow::DeviceType(parsed_name.type.c_str()),
-                            node_def, nullptr /* kernel_def */, &class_name);
+  status = tensorflow::FindKernelDef(
+      tensorflow::DeviceType(parsed_name.type.c_str()), node_def,
+      nullptr /* kernel_def */, &class_name);
+  if (!status.ok()) {
+    LOG(WARNING) << "Op [" << node_def.op() << "]: " << status;
+  }
   return class_name;
 }
 

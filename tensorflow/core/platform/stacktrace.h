@@ -16,16 +16,15 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PLATFORM_STACKTRACE_H_
 #define TENSORFLOW_CORE_PLATFORM_STACKTRACE_H_
 
-#include "tensorflow/core/platform/platform.h"
+#include "tensorflow/core/platform/platform.h"  // IWYU pragma: export
+#include "tsl/platform/stacktrace.h"
 
-// Include appropriate platform-dependent implementation.
-#if defined(PLATFORM_GOOGLE)
-#include "tensorflow/core/platform/google/stacktrace.h"
-#elif defined(PLATFORM_POSIX) || defined(PLATFORM_POSIX_ANDROID) || \
-    defined(PLATFORM_GOOGLE_ANDROID)
-#include "tensorflow/core/platform/default/stacktrace.h"
-#else
-#error Define the appropriate PLATFORM_<foo> macro for this platform
-#endif
+namespace tensorflow {
+// NOLINTBEGIN(misc-unused-using-decls)
+using tsl::CurrentStackTrace;
+using tsl::DebugWriteToString;
+using tsl::SavedStackTrace;
+// NOLINTEND(misc-unused-using-decls)
+}  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_PLATFORM_STACKTRACE_H_

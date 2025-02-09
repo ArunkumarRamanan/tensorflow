@@ -13,49 +13,54 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_PLATFORM_TYPES_H_
-#define TENSORFLOW_PLATFORM_TYPES_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_TYPES_H_
+#define TENSORFLOW_CORE_PLATFORM_TYPES_H_
 
-#include <string>
+#include "tensorflow/core/platform/bfloat16.h"
 #include "tensorflow/core/platform/platform.h"
-
-// Include appropriate platform-dependent implementations
-#if defined(PLATFORM_GOOGLE) || defined(GOOGLE_INTEGRAL_TYPES)
-#include "tensorflow/core/platform/google/integral_types.h"
-#elif defined(PLATFORM_POSIX) || defined(PLATFORM_POSIX_ANDROID) || \
-    defined(PLATFORM_GOOGLE_ANDROID) || defined(PLATFORM_WINDOWS)
-#include "tensorflow/core/platform/default/integral_types.h"
-#else
-#error Define the appropriate PLATFORM_<foo> macro for this platform
-#endif
+#include "tensorflow/core/platform/tstring.h"
+#include "tsl/platform/types.h"
 
 namespace tensorflow {
 
-// Define tensorflow::string to refer to appropriate platform specific type.
-// TODO(josh11b): Move this into the platform/*/integral_types.h files
-// above, and rename them platform/*/types.h.
-#if defined(PLATFORM_GOOGLE)
-using ::string;
-#else
-using std::string;
-#endif
+// Alias tensorflow::string to std::string.
+using tsl::string;
 
-static const uint8 kuint8max = ((uint8)0xFF);
-static const uint16 kuint16max = ((uint16)0xFFFF);
-static const uint32 kuint32max = ((uint32)0xFFFFFFFF);
-static const uint64 kuint64max = ((uint64)0xFFFFFFFFFFFFFFFFull);
-static const int8 kint8min = ((int8)~0x7F);
-static const int8 kint8max = ((int8)0x7F);
-static const int16 kint16min = ((int16)~0x7FFF);
-static const int16 kint16max = ((int16)0x7FFF);
-static const int32 kint32min = ((int32)~0x7FFFFFFF);
-static const int32 kint32max = ((int32)0x7FFFFFFF);
-static const int64 kint64min = ((int64)~0x7FFFFFFFFFFFFFFFll);
-static const int64 kint64max = ((int64)0x7FFFFFFFFFFFFFFFll);
+using tsl::uint16;
+using tsl::uint32;
+using tsl::uint4;
+using tsl::uint64;
+using tsl::uint8;
+
+using tsl::int16;
+using tsl::int32;
+using tsl::int4;
+using tsl::int64;
+using tsl::int8;
+
+using tsl::float8_e4m3b11fnuz;
+using tsl::float8_e4m3fn;
+using tsl::float8_e4m3fnuz;
+using tsl::float8_e5m2;
+using tsl::float8_e5m2fnuz;
+
+static const uint8 kuint8max = tsl::kuint8max;
+static const uint16 kuint16max = tsl::kuint16max;
+static const uint32 kuint32max = tsl::kuint32max;
+static const uint64 kuint64max = tsl::kuint64max;
+static const int8_t kint8min = tsl::kint8min;
+static const int8_t kint8max = tsl::kint8max;
+static const int16_t kint16min = tsl::kint16min;
+static const int16_t kint16max = tsl::kint16max;
+static const int32_t kint32min = tsl::kint32min;
+static const int32_t kint32max = tsl::kint32max;
+static const int64_t kint64min = tsl::kint64min;
+static const int64_t kint64max = tsl::kint64max;
 
 // A typedef for a uint64 used as a short fingerprint.
-typedef uint64 Fprint;
-
+using tsl::bfloat16;
+using tsl::Fprint;
+using tsl::tstring;  // NOLINT: suppress 'using decl 'tstring' is unused'
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_PLATFORM_TYPES_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_TYPES_H_

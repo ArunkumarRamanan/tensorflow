@@ -17,7 +17,6 @@ limitations under the License.
 
 #include <vector>
 #include "tensorflow/core/framework/allocator.h"
-#include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/kernels/ops_util.h"
@@ -64,7 +63,7 @@ class OpSegmentTest : public ::testing::Test {
 
   OpSegment::CreateKernelFn GetFn(const NodeDef* ndef) {
     return [this, ndef](OpKernel** kernel) {
-      Status s;
+      absl::Status s;
       auto created = CreateOpKernel(DEVICE_CPU, &device_, cpu_allocator(),
                                     *ndef, TF_GRAPH_DEF_VERSION, &s);
       if (s.ok()) {
@@ -116,7 +115,7 @@ TEST_F(OpSegmentTest, SessionNotFound) {
   OpSegment opseg;
   OpKernel* op;
   NodeDef def = float_nodedefs_[0];
-  Status s = opseg.FindOrCreate("A", def.name(), &op, GetFn(&def));
+  absl::Status s = opseg.FindOrCreate("A", def.name(), &op, GetFn(&def));
   EXPECT_TRUE(errors::IsNotFound(s)) << s;
 }
 
@@ -126,7 +125,7 @@ TEST_F(OpSegmentTest, CreateFailure) {
   NodeDef def = float_nodedefs_[0];
   def.set_op("nonexistop");
   opseg.AddHold("A");
-  Status s = opseg.FindOrCreate("A", def.name(), &op, GetFn(&def));
+  absl::Status s = opseg.FindOrCreate("A", def.name(), &op, GetFn(&def));
   EXPECT_TRUE(errors::IsNotFound(s)) << s;
   opseg.RemoveHold("A");
 }

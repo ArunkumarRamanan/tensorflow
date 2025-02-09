@@ -13,15 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_PLATFORM_NET_H_
-#define TENSORFLOW_PLATFORM_NET_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_NET_H_
+#define TENSORFLOW_CORE_PLATFORM_NET_H_
+
+#include "tsl/platform/net.h"
 
 namespace tensorflow {
 namespace internal {
-
-int PickUnusedPortOrDie();
-
+using ::tsl::internal::PickUnusedPortOrDie;  // NOLINT(misc-unused-using-decls)
 }  // namespace internal
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_PLATFORM_NET_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_NET_H_

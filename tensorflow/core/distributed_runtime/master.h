@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/distributed_runtime/call_options.h"
 #include "tensorflow/core/distributed_runtime/master_env.h"
 #include "tensorflow/core/distributed_runtime/master_session.h"
+#include "tensorflow/core/distributed_runtime/recent_request_ids.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
 #include "tensorflow/core/platform/macros.h"
@@ -38,7 +39,7 @@ class Master {
   virtual ~Master();
 
   // Convenient typedef for a closure passing a Status.
-  typedef std::function<void(const Status&)> MyClosure;
+  typedef std::function<void(const absl::Status&)> MyClosure;
 
   void CreateSession(const CreateSessionRequest* req,
                      CreateSessionResponse* resp, MyClosure done);
@@ -46,8 +47,11 @@ class Master {
   void ExtendSession(const ExtendSessionRequest* req,
                      ExtendSessionResponse* resp, MyClosure done);
 
-  void RunStep(CallOptions* opts, const RunStepRequest* req,
-               RunStepResponse* resp, MyClosure done);
+  void PartialRunSetup(const PartialRunSetupRequest* req,
+                       PartialRunSetupResponse* resp, MyClosure done);
+
+  void RunStep(CallOptions* opts, const RunStepRequestWrapper* req,
+               MutableRunStepResponseWrapper* resp, MyClosure done);
 
   void CloseSession(const CloseSessionRequest* req, CloseSessionResponse* resp,
                     MyClosure done);
@@ -55,7 +59,15 @@ class Master {
   void ListDevices(const ListDevicesRequest* req, ListDevicesResponse* resp,
                    MyClosure done);
 
+  // See tensorflow::Reset() and the comment on ResetRequest.
   void Reset(const ResetRequest* req, ResetResponse* resp, MyClosure done);
+
+  void MakeCallable(const MakeCallableRequest* req, MakeCallableResponse* resp,
+                    MyClosure done);
+  void RunCallable(CallOptions* opts, const RunCallableRequest* req,
+                   RunCallableResponse* resp, MyClosure done);
+  void ReleaseCallable(const ReleaseCallableRequest* req,
+                       ReleaseCallableResponse* resp, MyClosure done);
 
  private:
   typedef Master ME;
@@ -68,21 +80,24 @@ class Master {
 
   // shutdown_ is set to true by the dtor.
   condition_variable shutdown_cv_;
-  bool shutdown_ GUARDED_BY(mu_) = false;
+  bool shutdown_ TF_GUARDED_BY(mu_) = false;
   Thread* gc_thread_;
 
   // Maps session handles to sessions.
-  std::unordered_map<string, MasterSession*> sessions_ GUARDED_BY(mu_);
+  std::unordered_map<string, MasterSession*> sessions_ TF_GUARDED_BY(mu_);
 
   // Moving average of step times.
-  MovingAverage last_1000_steps_ GUARDED_BY(mu_);
+  MovingAverage last_1000_steps_ TF_GUARDED_BY(mu_);
 
   // Cumulative number of steps executed.
-  int64 step_count_ GUARDED_BY(mu_);
+  int64_t step_count_ TF_GUARDED_BY(mu_);
 
   // If a session is not active for this many seconds, it will be
   // closed automatically.
   const double session_gc_seconds_;
+
+  // Used to track ids for incoming requests so we can detect duplicates.
+  RecentRequestIds recent_request_ids_;
 
   // Call CleanupAll on all workers.
   void CleanupWorkers(const ResetRequest& reset);
@@ -90,7 +105,12 @@ class Master {
   // Cleanup unused session.
   void GC();
 
-  TF_DISALLOW_COPY_AND_ASSIGN(Master);
+  // Find master session by session handle, and increments the reference count
+  // on the returned MasterSession if not null.
+  MasterSession* FindMasterSession(const string& handle);
+
+  Master(const Master&) = delete;
+  void operator=(const Master&) = delete;
 };
 
 }  // namespace tensorflow

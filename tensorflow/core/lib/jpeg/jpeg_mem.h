@@ -18,13 +18,15 @@ limitations under the License.
 // (data array and size fields).
 // Direct manipulation of JPEG strings are supplied: Flip, Rotate, Crop..
 
-#ifndef TENSORFLOW_LIB_JPEG_JPEG_MEM_H_
-#define TENSORFLOW_LIB_JPEG_JPEG_MEM_H_
+#ifndef TENSORFLOW_CORE_LIB_JPEG_JPEG_MEM_H_
+#define TENSORFLOW_CORE_LIB_JPEG_JPEG_MEM_H_
 
 #include <functional>
 #include <string>
 
 #include "tensorflow/core/lib/core/stringpiece.h"
+#include "tensorflow/core/platform/jpeg.h"
+#include "tensorflow/core/platform/tstring.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -54,6 +56,23 @@ struct UncompressFlags {
   // equal to width*components*sizeof(JSAMPLE).  If 0 is passed, the stride
   // used will be this minimal value.
   int stride = 0;
+
+  // Setting of J_DCT_METHOD enum in jpeglib.h, for choosing which
+  // algorithm to use for DCT/IDCT.
+  //
+  // Setting this has a quality/speed trade-off implication.
+  J_DCT_METHOD dct_method = JDCT_DEFAULT;
+
+  // Settings of crop window before decompression.
+  bool crop = false;
+  // Vertical coordinate of the top-left corner of the result in the input.
+  int crop_x = 0;
+  // Horizontal coordinate of the top-left corner of the result in the input.
+  int crop_y = 0;
+  // Width of the output image.
+  int crop_width = 0;
+  // Height of the output image.
+  int crop_height = 0;
 };
 
 // Uncompress some raw JPEG data given by the pointer srcdata and the length
@@ -71,7 +90,7 @@ struct UncompressFlags {
 uint8* Uncompress(const void* srcdata, int datasize,
                   const UncompressFlags& flags, int* width, int* height,
                   int* components,  // Output only: useful with autodetect
-                  int64* nwarn);
+                  int64_t* nwarn);
 
 // Version of Uncompress that allocates memory via a callback.  The callback
 // arguments are (width, height, components).  If the size is known ahead of
@@ -79,7 +98,7 @@ uint8* Uncompress(const void* srcdata, int datasize,
 // the buffer to be shaped based on the JPEG header.  The caller is responsible
 // for freeing the memory *even along error paths*.
 uint8* Uncompress(const void* srcdata, int datasize,
-                  const UncompressFlags& flags, int64* nwarn,
+                  const UncompressFlags& flags, int64_t* nwarn,
                   std::function<uint8*(int, int, int)> allocate_output);
 
 // Read jpeg header and get image information.  Returns true on success.
@@ -118,7 +137,7 @@ struct CompressFlags {
   int y_density = 300;
 
   // If not empty, embed this XMP metadata in the image header
-  StringPiece xmp_metadata;
+  absl::string_view xmp_metadata;
 
   // The distance in bytes from one scanline to the other.  Should be at least
   // equal to width*components*sizeof(JSAMPLE).  If 0 is passed, the stride
@@ -131,14 +150,14 @@ struct CompressFlags {
 // The encoded data is returned as a string.
 // If not empty, XMP metadata can be embedded in the image header
 // On error, returns the empty string (which is never a valid jpeg).
-string Compress(const void* srcdata, int width, int height,
-                const CompressFlags& flags);
+tstring Compress(const void* srcdata, int width, int height,
+                 const CompressFlags& flags);
 
 // On error, returns false and sets output to empty.
 bool Compress(const void* srcdata, int width, int height,
-              const CompressFlags& flags, string* output);
+              const CompressFlags& flags, tstring* output);
 
 }  // namespace jpeg
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_LIB_JPEG_JPEG_MEM_H_
+#endif  // TENSORFLOW_CORE_LIB_JPEG_JPEG_MEM_H_

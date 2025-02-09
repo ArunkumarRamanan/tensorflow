@@ -13,28 +13,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_PLATFORM_DENORMAL_H_
-#define TENSORFLOW_PLATFORM_DENORMAL_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_DENORMAL_H_
+#define TENSORFLOW_CORE_PLATFORM_DENORMAL_H_
 
 #include "tensorflow/core/platform/macros.h"
+#include "tsl/platform/denormal.h"
 
 namespace tensorflow {
 namespace port {
-
-// While this class is active, denormal floating point numbers are flushed
-// to zero.  The destructor restores the original flags.
-class ScopedFlushDenormal {
- public:
-  ScopedFlushDenormal();
-  ~ScopedFlushDenormal();
-
- private:
-  bool flush_zero_mode_;
-  bool denormals_zero_mode_;
-  TF_DISALLOW_COPY_AND_ASSIGN(ScopedFlushDenormal);
-};
-
+// NOLINTBEGIN(misc-unused-using-decls)
+using tsl::port::DenormalState;
+using tsl::port::GetDenormalState;
+using tsl::port::ScopedDontFlushDenormal;
+using tsl::port::ScopedFlushDenormal;
+using tsl::port::ScopedRestoreFlushDenormalState;
+using tsl::port::SetDenormalState;
+// NOLINTEND(misc-unused-using-decls)
 }  // namespace port
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_PLATFORM_DENORMAL_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_DENORMAL_H_

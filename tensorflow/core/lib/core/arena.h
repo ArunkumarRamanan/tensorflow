@@ -15,8 +15,8 @@ limitations under the License.
 
 // TODO(vrv): Switch this to an open-sourced version of Arena.
 
-#ifndef TENSORFLOW_LIB_CORE_ARENA_H_
-#define TENSORFLOW_LIB_CORE_ARENA_H_
+#ifndef TENSORFLOW_CORE_LIB_CORE_ARENA_H_
+#define TENSORFLOW_CORE_LIB_CORE_ARENA_H_
 
 #include <assert.h>
 
@@ -42,6 +42,10 @@ class Arena {
     return reinterpret_cast<char*>(GetMemory(size, 1));
   }
 
+  char* AllocAligned(const size_t size, const size_t alignment) {
+    return reinterpret_cast<char*>(GetMemory(size, alignment));
+  }
+
   void Reset();
 
 // This should be the worst-case alignment for any type.  This is
@@ -53,7 +57,7 @@ class Arena {
 #ifdef __i386__
   static const int kDefaultAlignment = 4;
 #else
-  static const int kDefaultAlignment = 8;
+  static constexpr int kDefaultAlignment = 8;
 #endif
 
  protected:
@@ -97,10 +101,11 @@ class Arena {
 
   void FreeBlocks();  // Frees all except first block
 
-  TF_DISALLOW_COPY_AND_ASSIGN(Arena);
+  Arena(const Arena&) = delete;
+  void operator=(const Arena&) = delete;
 };
 
 }  // namespace core
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_LIB_CORE_ARENA_H_
+#endif  // TENSORFLOW_CORE_LIB_CORE_ARENA_H_

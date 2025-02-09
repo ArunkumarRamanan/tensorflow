@@ -2,13 +2,19 @@ licenses(["restricted"])
 
 package(default_visibility = ["//visibility:public"])
 
-cc_library(
+alias(
+    name = "numpy",
+    actual = "@pypi_numpy//:pkg",
+)
+
+alias(
     name = "headers",
-    hdrs = glob([
-        "numpy_include/**/*.h",
-    ]),
-    data = ["//util/python:python_checked"],
-    includes = [
-        "numpy_include",
-    ],
+    actual = "@pypi_numpy//:numpy_headers",
+)
+
+genrule(
+    name = "dummy",
+    outs = ["tf_numpy_dummy.py"],
+    cmd = "touch $@",
+    visibility = ["//visibility:private"],
 )

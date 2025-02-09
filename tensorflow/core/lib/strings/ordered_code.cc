@@ -18,8 +18,9 @@ limitations under the License.
 #include <assert.h>
 #include <stddef.h>
 
-#include "tensorflow/core/lib/core/stringpiece.h"
+#include "xla/tsl/lib/core/bits.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/stringpiece.h"
 
 namespace tensorflow {
 namespace strings {
@@ -134,7 +135,9 @@ inline static void AppendBytes(string* dest, const char* src, size_t len) {
   dest->append(src, len);
 }
 
-inline bool IsSpecialByte(char c) { return ((unsigned char)(c + 1)) < 2; }
+inline bool IsSpecialByte(char c) {
+  return (static_cast<unsigned char>(c + 1)) < 2;
+}
 
 // Return a pointer to the first byte in the range "[start..limit)"
 // whose value is 0 or 255 (kEscape1 or kEscape2).  If no such byte
@@ -158,7 +161,7 @@ const char* OrderedCode::TEST_SkipToNextSpecialByte(const char* start,
 
 // Helper routine to encode "s" and append to "*dest", escaping special
 // characters.
-inline static void EncodeStringFragment(string* dest, StringPiece s) {
+inline static void EncodeStringFragment(string* dest, absl::string_view s) {
   const char* p = s.data();
   const char* limit = p + s.size();
   const char* copy_start = p;
@@ -185,7 +188,7 @@ inline static void EncodeStringFragment(string* dest, StringPiece s) {
   }
 }
 
-void OrderedCode::WriteString(string* dest, StringPiece s) {
+void OrderedCode::WriteString(string* dest, absl::string_view s) {
   EncodeStringFragment(dest, s);
   AppendBytes(dest, kEscape1_Separator, 2);
 }
@@ -201,7 +204,7 @@ void OrderedCode::WriteNumIncreasing(string* dest, uint64 val) {
     buf[9 - len] = (val & 0xff);
     val >>= 8;
   }
-  buf[9 - len - 1] = (unsigned char)len;
+  buf[9 - len - 1] = len;
   len++;
   AppendBytes(dest, reinterpret_cast<const char*>(buf + 9 - len), len);
 }
@@ -210,7 +213,7 @@ void OrderedCode::WriteNumIncreasing(string* dest, uint64 val) {
 // If parse succeeds, return true, consume encoding from
 // "*src", and if result != NULL append the decoded string to "*result".
 // Otherwise, return false and leave both undefined.
-inline static bool ReadStringInternal(StringPiece* src, string* result) {
+inline static bool ReadStringInternal(absl::string_view* src, string* result) {
   const char* start = src->data();
   const char* string_limit = src->data() + src->size();
 
@@ -265,11 +268,11 @@ inline static bool ReadStringInternal(StringPiece* src, string* result) {
   return false;
 }
 
-bool OrderedCode::ReadString(StringPiece* src, string* result) {
+bool OrderedCode::ReadString(absl::string_view* src, string* result) {
   return ReadStringInternal(src, result);
 }
 
-bool OrderedCode::ReadNumIncreasing(StringPiece* src, uint64* result) {
+bool OrderedCode::ReadNumIncreasing(absl::string_view* src, uint64* result) {
   if (src->empty()) {
     return false;  // Not enough bytes
   }
@@ -401,49 +404,15 @@ static const uint64 kLengthToMask[1 + kMaxSigned64Length] = {
 // For positive numbers, the number of bits is 1 plus the most significant
 // bit position (the highest bit position in a positive int64 is 63).
 // For a negative number n, we count the bits in ~n.
-// That is, length = kBitsToLength[Bits::Log2Floor64(n < 0 ? ~n : n) + 1].
+// That is, length = kBitsToLength[tsl::Log2Floor64(n < 0 ? ~n : n) + 1].
 static const int8 kBitsToLength[1 + 63] = {
     1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4,
     4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 7, 7,
     7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 10};
 
-#if defined(__GNUC__)
-// Returns floor(lg(n)).  Returns -1 if n == 0.
-static int Log2Floor64(uint64 n) {
-  return n == 0 ? -1 : 63 ^ __builtin_clzll(n);
-}
-#else
-// Portable slow version
-static int Log2Floor32_Portable(uint32 n) {
-  if (n == 0) return -1;
-  int log = 0;
-  uint32 value = n;
-  for (int i = 4; i >= 0; --i) {
-    int shift = (1 << i);
-    uint32 x = value >> shift;
-    if (x != 0) {
-      value = x;
-      log += shift;
-    }
-  }
-  assert(value == 1);
-  return log;
-}
-// Returns floor(lg(n)).  Returns -1 if n == 0.
-static int Log2Floor64(uint64 n) {
-  const uint32 topbits = static_cast<uint32>(n >> 32);
-  if (topbits == 0) {
-    // Top bits are zero, so scan in bottom bits
-    return Log2Floor32_Portable(static_cast<uint32>(n));
-  } else {
-    return 32 + Log2Floor32_Portable(topbits);
-  }
-}
-#endif
-
 // Calculates the encoding length in bytes of the signed number n.
-static inline int SignedEncodingLength(int64 n) {
-  return kBitsToLength[Log2Floor64(n < 0 ? ~n : n) + 1];
+static inline int SignedEncodingLength(int64_t n) {
+  return kBitsToLength[tsl::Log2Floor64(n < 0 ? ~n : n) + 1];
 }
 
 static void StoreBigEndian64(char* dst, uint64 v) {
@@ -461,7 +430,7 @@ static uint64 LoadBigEndian64(const char* src) {
   return result;
 }
 
-void OrderedCode::WriteSignedNumIncreasing(string* dest, int64 val) {
+void OrderedCode::WriteSignedNumIncreasing(string* dest, int64_t val) {
   const uint64 x = val < 0 ? ~val : val;
   if (x < 64) {  // fast path for encoding length == 1
     *dest += kLengthToHeaderBits[1][0] ^ val;
@@ -470,7 +439,8 @@ void OrderedCode::WriteSignedNumIncreasing(string* dest, int64 val) {
   // buf = val in network byte order, sign extended to 10 bytes
   const char sign_byte = val < 0 ? '\xff' : '\0';
   char buf[10] = {
-      sign_byte, sign_byte,
+      sign_byte,
+      sign_byte,
   };
   StoreBigEndian64(buf + 2, val);
   static_assert(sizeof(buf) == kMaxSigned64Length, "max length size mismatch");
@@ -482,7 +452,8 @@ void OrderedCode::WriteSignedNumIncreasing(string* dest, int64 val) {
   dest->append(begin, len);
 }
 
-bool OrderedCode::ReadSignedNumIncreasing(StringPiece* src, int64* result) {
+bool OrderedCode::ReadSignedNumIncreasing(absl::string_view* src,
+                                          int64_t* result) {
   if (src->empty()) return false;
   const uint64 xor_mask = (!((*src)[0] & 0x80)) ? ~0ULL : 0ULL;
   const unsigned char first_byte = (*src)[0] ^ (xor_mask & 0xff);
@@ -491,7 +462,7 @@ bool OrderedCode::ReadSignedNumIncreasing(StringPiece* src, int64* result) {
   int len;
   uint64 x;
   if (first_byte != 0xff) {
-    len = 7 - Log2Floor64(first_byte ^ 0xff);
+    len = 7 - tsl::Log2Floor64(first_byte ^ 0xff);
     if (src->size() < static_cast<size_t>(len)) return false;
     x = xor_mask;  // sign extend using xor_mask
     for (int i = 0; i < len; ++i)

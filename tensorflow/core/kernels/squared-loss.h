@@ -13,11 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_SQUARED_LOSS_H_
-#define TENSORFLOW_KERNELS_SQUARED_LOSS_H_
-
-#include <algorithm>
-#include <cmath>
+#ifndef TENSORFLOW_CORE_KERNELS_SQUARED_LOSS_H_
+#define TENSORFLOW_CORE_KERNELS_SQUARED_LOSS_H_
 
 #include "tensorflow/core/kernels/loss.h"
 
@@ -66,11 +63,11 @@ class SquaredLossUpdater : public DualLossUpdater {
   inline double SmoothnessConstant() const final { return 1.0; }
 
   // Labels don't require conversion for linear regression.
-  Status ConvertLabel(float* const example_label) const final {
-    return Status::OK();
+  absl::Status ConvertLabel(float* const example_label) const final {
+    return absl::OkStatus();
   }
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_SQUARED_LOSS_H_
+#endif  // TENSORFLOW_CORE_KERNELS_SQUARED_LOSS_H_

@@ -16,6 +16,11 @@
 #
 # Common Bash functions used by build scripts
 
+COLOR_NC='\033[0m'
+COLOR_BOLD='\033[1m'
+COLOR_LIGHT_GRAY='\033[0;37m'
+COLOR_GREEN='\033[0;32m'
+COLOR_RED='\033[0;31m'
 
 die() {
   # Print a message and exit with code 1.
@@ -121,7 +126,7 @@ test_runner() {
   # Run a suite of tests, print failure logs (if any), wall-time each test,
   # and show the summary at the end.
   #
-  # Usage: test_runner <TEST_DESC> <ALL_TESTS> <TEST_BLACKLIST> <LOGS_DIR>
+  # Usage: test_runner <TEST_DESC> <ALL_TESTS> <TEST_DENYLIST> <LOGS_DIR>
   # e.g.,  test_runner "Tutorial test-on-install" \
   #                    "test1 test2 test3" "test2 test3" "/tmp/log_dir"
 
@@ -131,7 +136,7 @@ test_runner() {
 
   TEST_DESC=$1
   ALL_TESTS_STR=$2
-  TEST_BLACKLIST_SR=$3
+  TEST_DENYLIST_SR=$3
   LOGS_DIR=$4
 
   NUM_TESTS=$(echo "${ALL_TESTS_STR}" | wc -w)
@@ -147,9 +152,9 @@ test_runner() {
     ((COUNTER++))
     STAT_STR="(${COUNTER} / ${NUM_TESTS})"
 
-    if [[ "${TEST_BLACKLIST_STR}" == *"${CURR_TEST}"* ]]; then
+    if [[ "${TEST_DENYLIST_STR}" == *"${CURR_TEST}"* ]]; then
       ((SKIPPED_COUNTER++))
-      echo "${STAT_STR} Blacklisted ${TEST_DESC} SKIPPED: ${CURR_TEST}"
+      echo "${STAT_STR} Denylisted ${TEST_DESC} SKIPPED: ${CURR_TEST}"
       continue
     fi
 
@@ -203,5 +208,35 @@ test_runner() {
 
     echo ""
     die "${TEST_DESC} FAILED"
+  fi
+}
+
+configure_android_workspace() {
+  # Modify the WORKSPACE file.
+  # Note: This is workaround. This should be done by bazel.
+  if grep -q '^android_sdk_repository' WORKSPACE && grep -q '^android_ndk_repository' WORKSPACE; then
+    echo "You probably have your WORKSPACE file setup for Android."
+  else
+    if [ -z "${ANDROID_API_LEVEL}" -o -z "${ANDROID_BUILD_TOOLS_VERSION}" ] || \
+        [ -z "${ANDROID_SDK_HOME}" -o -z "${ANDROID_NDK_HOME}" ]; then
+      echo "ERROR: Your WORKSPACE file does not seems to have proper android"
+      echo "       configuration and not all the environment variables expected"
+      echo "       inside ci_build android docker container are set."
+      echo "       Please configure it manually. See: https://github.com/tensorflow/tensorflow/tree/master/tensorflow/tools/android/test/README.md"
+    else
+      cat << EOF >> WORKSPACE
+android_sdk_repository(
+    name = "androidsdk",
+    api_level = ${ANDROID_API_LEVEL},
+    build_tools_version = "${ANDROID_BUILD_TOOLS_VERSION}",
+    path = "${ANDROID_SDK_HOME}",
+)
+
+android_ndk_repository(
+    name="androidndk",
+    path="${ANDROID_NDK_HOME}",
+    api_level=21)
+EOF
+    fi
   fi
 }

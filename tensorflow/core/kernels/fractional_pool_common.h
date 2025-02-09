@@ -12,8 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef TENSORFLOW_KERNELS_FRACTIONAL_POOL_COMMON_H_
-#define TENSORFLOW_KERNELS_FRACTIONAL_POOL_COMMON_H_
+#ifndef TENSORFLOW_CORE_KERNELS_FRACTIONAL_POOL_COMMON_H_
+#define TENSORFLOW_CORE_KERNELS_FRACTIONAL_POOL_COMMON_H_
 
 #include <algorithm>
 #include <vector>
@@ -57,7 +57,7 @@ static inline void RandomShuffle(Iter first, Iter last, const Random& uniform) {
 //     * sum(generated_diff_pooling_sequence) = input_length
 //     * Let's define floor(input_length / output_length) = K, then
 //       K <= generated_diff_pooling_sequence[i] <= K+1
-// For example, when input_length = 10, output_length = 6, the followings are
+// For example, when input_length = 10, output_length = 6, the following are
 // valid pooling sequence:
 //     * [1, 2, 2, 1, 2, 2]
 //     * [1, 1, 2, 2, 2, 2]
@@ -70,9 +70,10 @@ static inline void RandomShuffle(Iter first, Iter last, const Random& uniform) {
 //   pseudo_random:  Whether or not use pseudo-random
 // Returns:
 //   pooling_sequence:  This is the cumulative pooling sequence.
-std::vector<int64> GeneratePoolingSequence(int input_length, int output_length,
-                                           GuardedPhiloxRandom* generator,
-                                           bool pseudo_random);
+std::vector<int64_t> GeneratePoolingSequence(int input_length,
+                                             int output_length,
+                                             GuardedPhiloxRandom* generator,
+                                             bool pseudo_random);
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_FRACTIONAL_POOL_COMMON_H_
+#endif  // TENSORFLOW_CORE_KERNELS_FRACTIONAL_POOL_COMMON_H_

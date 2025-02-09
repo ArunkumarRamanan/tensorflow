@@ -2,7 +2,10 @@
 # TensorFlow is a computational framework, primarily for use in machine
 # learning applications.
 
-licenses(["notice"])  # Apache 2.0
+package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    licenses = ["notice"],
+)
 
 sh_binary(
     name = "parallel_gpu_execute",
@@ -18,5 +21,5 @@ filegroup(
             "**/OWNERS",
         ],
     ),
-    visibility = ["//tensorflow:__subpackages__"],
+    visibility = ["//visibility:private"],
 )

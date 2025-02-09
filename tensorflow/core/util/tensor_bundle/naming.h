@@ -31,16 +31,18 @@ limitations under the License.
 //
 // Regexp can also be used: e.g. R"<prefix>.data-\d{5}-of-\d{5}" for data files.
 
-#ifndef TENSORFLOW_UTIL_TENSOR_BUNDLE_NAMING_H_
-#define TENSORFLOW_UTIL_TENSOR_BUNDLE_NAMING_H_
+#ifndef TENSORFLOW_CORE_UTIL_TENSOR_BUNDLE_NAMING_H_
+#define TENSORFLOW_CORE_UTIL_TENSOR_BUNDLE_NAMING_H_
 
 #include "tensorflow/core/lib/core/stringpiece.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 
-string MetaFilename(StringPiece prefix);
-string DataFilename(StringPiece prefix, int32 shard_id, int32 num_shards);
+string MetaFilename(absl::string_view prefix);
+string DataFilename(absl::string_view prefix, int32_t shard_id,
+                    int32_t num_shards);
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_UTIL_TENSOR_BUNDLE_NAMING_H_
+#endif  // TENSORFLOW_CORE_UTIL_TENSOR_BUNDLE_NAMING_H_

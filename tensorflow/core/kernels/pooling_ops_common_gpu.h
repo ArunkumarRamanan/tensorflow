@@ -13,15 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#if !GOOGLE_CUDA
-#error This file must only be included when building with Cuda support
+#if !GOOGLE_CUDA && !TENSORFLOW_USE_ROCM
+#error This file must only be included when building with Cuda or ROCm support
 #endif
 
 #ifndef TENSORFLOW_CORE_KERNELS_POOLING_OPS_COMMON_GPU_H_
 #define TENSORFLOW_CORE_KERNELS_POOLING_OPS_COMMON_GPU_H_
 
 #include <vector>
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/numeric_op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -40,11 +40,12 @@ class DnnPoolingOp {
  public:
   typedef GPUDevice Device;
   static void Compute(OpKernelContext* context,
-                      perftools::gputools::dnn::PoolingMode pooling_mode,
+                      se::dnn::PoolingMode pooling_mode,
                       const std::vector<int32>& size,
                       const std::vector<int32>& stride, Padding padding,
+                      std::vector<int64_t> explicit_paddings,
                       TensorFormat data_format, const Tensor& tensor_in,
-                      const TensorShape& tensor_out_shape);
+                      const TensorShape& tensor_out_shape, bool propagate_nans);
 };
 
 // A helper class that launch the cudnn pooling backward operations.
@@ -55,12 +56,13 @@ class DnnPoolingGradOp {
  public:
   typedef GPUDevice Device;
   static void Compute(OpKernelContext* context,
-                      perftools::gputools::dnn::PoolingMode pooling_mode,
+                      se::dnn::PoolingMode pooling_mode,
                       const std::vector<int32>& size,
                       const std::vector<int32>& stride, Padding padding,
+                      std::vector<int64_t> explicit_paddings,
                       TensorFormat data_format, const Tensor* tensor_in,
                       const Tensor* tensor_out, const Tensor& out_backprop,
-                      const TensorShape& tensor_in_shape);
+                      const TensorShape& tensor_in_shape, bool propagate_nans);
 };
 
 }  // namespace tensorflow

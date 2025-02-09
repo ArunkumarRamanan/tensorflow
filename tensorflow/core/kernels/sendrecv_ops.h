@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_SENDRECV_OPS_H_
-#define TENSORFLOW_KERNELS_SENDRECV_OPS_H_
+#ifndef TENSORFLOW_CORE_KERNELS_SENDRECV_OPS_H_
+#define TENSORFLOW_CORE_KERNELS_SENDRECV_OPS_H_
 
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/platform/macros.h"
@@ -26,10 +26,15 @@ class SendOp : public OpKernel {
   explicit SendOp(OpKernelConstruction* ctx);
   void Compute(OpKernelContext* ctx) override;
 
+  string TraceString(const OpKernelContext& ctx, bool verbose) const override;
+
  private:
   string key_prefix_;
+  Rendezvous::ParsedKey parsed_key_;
+  bool hostmem_sendrecv_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(SendOp);
+  SendOp(const SendOp&) = delete;
+  void operator=(const SendOp&) = delete;
 };
 
 class RecvOp : public AsyncOpKernel {
@@ -37,12 +42,17 @@ class RecvOp : public AsyncOpKernel {
   explicit RecvOp(OpKernelConstruction* ctx);
   void ComputeAsync(OpKernelContext* ctx, DoneCallback done) override;
 
+  string TraceString(const OpKernelContext& ctx, bool verbose) const override;
+
  private:
   string key_prefix_;
+  Rendezvous::ParsedKey parsed_key_;
+  bool hostmem_sendrecv_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(RecvOp);
+  RecvOp(const RecvOp&) = delete;
+  void operator=(const RecvOp&) = delete;
 };
 
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_SENDRECV_OPS_H_
+#endif  // TENSORFLOW_CORE_KERNELS_SENDRECV_OPS_H_

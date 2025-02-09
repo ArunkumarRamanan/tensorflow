@@ -13,50 +13,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_CORE_PLATFORM_GOOGLE_AUTH_PROVIDER_H_
-#define TENSORFLOW_CORE_PLATFORM_GOOGLE_AUTH_PROVIDER_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_CLOUD_GOOGLE_AUTH_PROVIDER_H_
+#define TENSORFLOW_CORE_PLATFORM_CLOUD_GOOGLE_AUTH_PROVIDER_H_
 
 #include <memory>
+
+#include "xla/tsl/platform/cloud/google_auth_provider.h"
 #include "tensorflow/core/platform/cloud/auth_provider.h"
+#include "tensorflow/core/platform/cloud/compute_engine_metadata_client.h"
 #include "tensorflow/core/platform/cloud/oauth_client.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 
 namespace tensorflow {
-
-/// Implementation based on Google Application Default Credentials.
-class GoogleAuthProvider : public AuthProvider {
- public:
-  GoogleAuthProvider();
-  explicit GoogleAuthProvider(
-      std::unique_ptr<OAuthClient> oauth_client,
-      std::unique_ptr<HttpRequest::Factory> http_request_factory, Env* env);
-  virtual ~GoogleAuthProvider() {}
-
-  /// \brief Returns the short-term authentication bearer token.
-  ///
-  /// Safe for concurrent use by multiple threads.
-  Status GetToken(string* token) override;
-
- private:
-  /// \brief Gets the bearer token from files.
-  ///
-  /// Tries the file from $GOOGLE_APPLICATION_CREDENTIALS and the
-  /// standard gcloud tool's location.
-  Status GetTokenFromFiles();
-
-  /// Gets the bearer token from Google Compute Engine environment.
-  Status GetTokenFromGce();
-
-  std::unique_ptr<OAuthClient> oauth_client_;
-  std::unique_ptr<HttpRequest::Factory> http_request_factory_;
-  Env* env_;
-  mutex mu_;
-  string current_token_ GUARDED_BY(mu_);
-  uint64 expiration_timestamp_sec_ GUARDED_BY(mu_) = 0;
-  TF_DISALLOW_COPY_AND_ASSIGN(GoogleAuthProvider);
-};
-
+using tsl::GoogleAuthProvider;  // NOLINT(misc-unused-using-decls)
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_PLATFORM_GOOGLE_AUTH_PROVIDER_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_CLOUD_GOOGLE_AUTH_PROVIDER_H_

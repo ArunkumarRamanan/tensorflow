@@ -42,8 +42,19 @@ CostModel* CostModelManager::FindOrCreateCostModel(const Graph* graph) {
   return cost_model;
 }
 
-Status CostModelManager::AddToCostGraphDef(const Graph* graph,
-                                           CostGraphDef* cost_graph) {
+bool CostModelManager::RemoveCostModelForGraph(const Graph* graph) {
+  mutex_lock l(mu_);
+  auto itr = cost_models_.find(graph);
+  if (itr == cost_models_.end()) {
+    return false;
+  }
+  delete itr->second;
+  cost_models_.erase(graph);
+  return true;
+}
+
+absl::Status CostModelManager::AddToCostGraphDef(const Graph* graph,
+                                                 CostGraphDef* cost_graph) {
   mutex_lock l(mu_);
   // Get the cost model for the graph.
   auto it = cost_models_.find(graph);
@@ -52,7 +63,7 @@ Status CostModelManager::AddToCostGraphDef(const Graph* graph,
   }
   CostModel* cost_model = it->second;
   cost_model->AddToCostGraphDef(graph, cost_graph);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

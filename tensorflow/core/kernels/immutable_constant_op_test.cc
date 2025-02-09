@@ -23,6 +23,7 @@ limitations under the License.
 #include "tensorflow/core/graph/graph_def_builder.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/io/path.h"
+#include "tensorflow/core/platform/null_file_system.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
 #include "tensorflow/core/public/session.h"
@@ -59,12 +60,16 @@ class TestReadOnlyMemoryRegion : public ReadOnlyMemoryRegion {
 class TestFileSystem : public NullFileSystem {
  public:
   ~TestFileSystem() override = default;
-  Status NewReadOnlyMemoryRegionFromFile(
-      const string& fname,
+
+  // import non-transactional method from the base class
+  using NullFileSystem::NewReadOnlyMemoryRegionFromFile;
+
+  absl::Status NewReadOnlyMemoryRegionFromFile(
+      const string& fname, TransactionToken* token,
       std::unique_ptr<ReadOnlyMemoryRegion>* result) override {
     float val = 0;
-    StringPiece scheme, host, path;
-    ParseURI(fname, &scheme, &host, &path);
+    absl::string_view scheme, host, path;
+    io::ParseURI(fname, &scheme, &host, &path);
     // For the tests create in-memory regions with float values equal to the
     // region name.
     if (path == "/2") {
@@ -78,7 +83,7 @@ class TestFileSystem : public NullFileSystem {
     auto region = new TestReadOnlyMemoryRegion(kTestTensorSizeBytes);
     std::fill_n(region->GetWritableDataStart(), kTestTensorSize, val);
     result->reset(region);
-    return Status::OK();
+    return absl::OkStatus();
   }
 };
 
@@ -101,7 +106,7 @@ TEST(ImmutableConstantOpTest, Simple) {
   session_options.env = Env::Default();
   session_options.config.mutable_graph_options()
       ->mutable_optimizer_options()
-      ->set_opt_level(OptimizerOptions_Level_L0);
+      ->set_opt_level(OptimizerOptions::L0);
   std::unique_ptr<Session> session(NewSession(session_options));
   ASSERT_TRUE(session != nullptr) << "Failed to create session";
   TF_ASSERT_OK(session->Create(graph_def)) << "Can't create test graph";
@@ -121,7 +126,7 @@ TEST(ImmutableConstantOpTest, ExecutionError) {
   const TensorShape kBadTensorShape({40, 100});
   const TensorShape kTestTensorShapeT({1, 4});
 
-  auto root = Scope::NewRootScope().ExitOnError();
+  auto root = Scope::DisabledShapeInferenceScope().ExitOnError();
   auto node1 =
       ops::ImmutableConst(root, DT_FLOAT, kBadTensorShape, "test:///2");
   auto node2 =
@@ -141,18 +146,19 @@ TEST(ImmutableConstantOpTest, ExecutionError) {
       error::INTERNAL);
 }
 
-Status CreateTempFile(Env* env, float value, uint64 size, string* filename) {
+absl::Status CreateTempFileFloat(Env* env, float value, uint64 size,
+                                 string* filename) {
   const string dir = testing::TmpDir();
   *filename = io::JoinPath(dir, strings::StrCat("file_", value));
   std::unique_ptr<WritableFile> file;
   TF_RETURN_IF_ERROR(env->NewWritableFile(*filename, &file));
   for (uint64 i = 0; i < size; ++i) {
-    StringPiece sp;
-    sp.set(&value, sizeof(value));
+    absl::string_view sp(static_cast<char*>(static_cast<void*>(&value)),
+                         sizeof(value));
     TF_RETURN_IF_ERROR(file->Append(sp));
   }
   TF_RETURN_IF_ERROR(file->Close());
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 TEST(ImmutableConstantOpTest, FromFile) {
@@ -161,8 +167,8 @@ TEST(ImmutableConstantOpTest, FromFile) {
   auto root = Scope::NewRootScope().ExitOnError();
 
   string two_file, three_file;
-  TF_ASSERT_OK(CreateTempFile(env, 2.0f, 1000, &two_file));
-  TF_ASSERT_OK(CreateTempFile(env, 3.0f, 1000, &three_file));
+  TF_ASSERT_OK(CreateTempFileFloat(env, 2.0f, 1000, &two_file));
+  TF_ASSERT_OK(CreateTempFileFloat(env, 3.0f, 1000, &three_file));
   auto node1 = ops::ImmutableConst(root, DT_FLOAT, kFileTensorShape, two_file);
   auto node2 =
       ops::ImmutableConst(root, DT_FLOAT, kFileTensorShape, three_file);
@@ -173,7 +179,7 @@ TEST(ImmutableConstantOpTest, FromFile) {
   SessionOptions session_options;
   session_options.config.mutable_graph_options()
       ->mutable_optimizer_options()
-      ->set_opt_level(OptimizerOptions_Level_L0);
+      ->set_opt_level(OptimizerOptions::L0);
   std::unique_ptr<Session> session(NewSession(session_options));
   ASSERT_TRUE(session != nullptr) << "Failed to create session";
   TF_ASSERT_OK(session->Create(graph_def)) << "Can't create test graph";
@@ -183,6 +189,40 @@ TEST(ImmutableConstantOpTest, FromFile) {
   EXPECT_EQ(outputs.front().flat<float>()(0), 2.0f * 3.0f);
   EXPECT_EQ(outputs.front().flat<float>()(1), 2.0f * 3.0f);
   EXPECT_EQ(outputs.front().flat<float>()(2), 2.0f * 3.0f);
+}
+
+absl::Status CreateTempFileBadString(Env* env, char value, uint64 size,
+                                     const string suffix, string* filename) {
+  const string dir = testing::TmpDir();
+  *filename = io::JoinPath(dir, strings::StrCat("file_", suffix));
+  std::unique_ptr<WritableFile> file;
+  TF_RETURN_IF_ERROR(env->NewWritableFile(*filename, &file));
+  TF_RETURN_IF_ERROR(file->Append(std::string(size, value)));
+  TF_RETURN_IF_ERROR(file->Close());
+  return absl::OkStatus();
+}
+
+TEST(ImmutableConstantOpTest, FromFileStringUnimplmented) {
+  const TensorShape kFileTensorShape({1});
+  Env* env = Env::Default();
+  auto root = Scope::NewRootScope().ExitOnError();
+
+  string bad_file;
+  TF_ASSERT_OK(CreateTempFileBadString(env, '\xe2', 128, "bad_e2", &bad_file));
+  auto result =
+      ops::ImmutableConst(root, DT_STRING, kFileTensorShape, bad_file);
+  GraphDef graph_def;
+  TF_ASSERT_OK(root.ToGraphDef(&graph_def));
+  SessionOptions session_options;
+  session_options.env = Env::Default();
+  std::unique_ptr<Session> session(NewSession(session_options));
+  ASSERT_TRUE(session != nullptr) << "Failed to create session";
+  TF_ASSERT_OK(session->Create(graph_def)) << "Can't create test graph";
+  std::vector<Tensor> outputs;
+  // Check that the run returned error.
+  EXPECT_EQ(
+      session->Run({}, {result.node()->name() + ":0"}, {}, &outputs).code(),
+      error::UNIMPLEMENTED);
 }
 
 }  // namespace

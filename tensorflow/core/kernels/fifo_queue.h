@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_FIFO_QUEUE_H_
-#define TENSORFLOW_KERNELS_FIFO_QUEUE_H_
+#ifndef TENSORFLOW_CORE_KERNELS_FIFO_QUEUE_H_
+#define TENSORFLOW_CORE_KERNELS_FIFO_QUEUE_H_
 
 #include <deque>
 #include <vector>
@@ -23,6 +23,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/kernels/queue_op.h"
 #include "tensorflow/core/kernels/typed_queue.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
@@ -30,9 +31,9 @@ limitations under the License.
 
 namespace tensorflow {
 
-class FIFOQueue : public TypedQueue<std::deque<PersistentTensor> > {
+class FIFOQueue : public TypedQueue<std::deque<Tensor> > {
  public:
-  FIFOQueue(int32 capacity, const DataTypeVector& component_dtypes,
+  FIFOQueue(int32_t capacity, const DataTypeVector& component_dtypes,
             const std::vector<TensorShape>& component_shapes,
             const string& name);
 
@@ -46,9 +47,9 @@ class FIFOQueue : public TypedQueue<std::deque<PersistentTensor> > {
   void TryDequeueMany(int num_elements, OpKernelContext* ctx,
                       bool allow_small_batch,
                       CallbackWithTuple callback) override;
-  Status MatchesNodeDef(const NodeDef& node_def) override;
+  absl::Status MatchesNodeDef(const NodeDef& node_def) override;
 
-  int32 size() override {
+  int32 size() const override {
     mutex_lock lock(mu_);
     return queues_[0].size();
   }
@@ -58,17 +59,35 @@ class FIFOQueue : public TypedQueue<std::deque<PersistentTensor> > {
 
   // Helper for dequeuing a single element from queues_.
   void DequeueLocked(OpKernelContext* ctx, Tuple* tuple)
-      EXCLUSIVE_LOCKS_REQUIRED(mu_);
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
-  static Status GetElementComponentFromBatch(const Tuple& tuple, int64 index,
-                                             int component,
-                                             OpKernelContext* ctx,
-                                             PersistentTensor* out_element);
+  static absl::Status GetElementComponentFromBatch(const Tuple& tuple,
+                                                   int64_t index, int component,
+                                                   OpKernelContext* ctx,
+                                                   Tensor* out_tensor);
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(FIFOQueue);
+  FIFOQueue(const FIFOQueue&) = delete;
+  void operator=(const FIFOQueue&) = delete;
+};
+
+// Defines a FIFOQueueOp, which produces a Queue (specifically, one
+// backed by FIFOQueue) that persists across different graph
+// executions, and sessions. Running this op produces a single-element
+// tensor of handles to Queues in the corresponding device.
+class FIFOQueueOp : public TypedQueueOp {
+ public:
+  explicit FIFOQueueOp(OpKernelConstruction* context);
+
+ private:
+  absl::Status CreateResource(QueueInterface** ret) override
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+
+  std::vector<TensorShape> component_shapes_;
+  FIFOQueueOp(const FIFOQueueOp&) = delete;
+  void operator=(const FIFOQueueOp&) = delete;
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_FIFO_QUEUE_H_
+#endif  // TENSORFLOW_CORE_KERNELS_FIFO_QUEUE_H_

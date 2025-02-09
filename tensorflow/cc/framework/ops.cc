@@ -17,11 +17,10 @@ limitations under the License.
 #include "tensorflow/core/lib/hash/hash.h"
 
 namespace tensorflow {
-namespace ops {
 
 Operation::Operation(Node* n) : inputs_(GetInputs(n)), node_(n) {}
 
-Output Operation::input(int i) const {
+Output Operation::input(int32_t i) const {
   CHECK_NOTNULL(node_);
   CHECK_GE(i, 0);
   CHECK_LT(i, node_->num_inputs());
@@ -38,14 +37,14 @@ Output Operation::input(int i) const {
   return Output(inputs_[i].first, inputs_[i].second);
 }
 
-Output Operation::output(int i) const {
+Output Operation::output(int32_t i) const {
   CHECK_NOTNULL(node_);
   CHECK_GE(i, 0);
   CHECK_LT(i, node_->num_outputs());
   return Output(node_, i);
 }
 
-uint64 Operation::hash(int64 index) const {
+uint64 Operation::hash(int32_t index) const {
   return ::tensorflow::Hash64(reinterpret_cast<const char*>(&node_),
                               sizeof(Node*), index);
 }
@@ -87,7 +86,7 @@ Input::Initializer::Initializer(
   }
 
   // Form the new shape.
-  TensorShape shape{static_cast<int64>(v.size())};
+  TensorShape shape{static_cast<int64_t>(v.size())};
   shape.AppendShape(TensorShape{first.tensor.shape()});
 
   Tensor t(first.tensor.dtype(), shape);
@@ -98,7 +97,7 @@ Input::Initializer::Initializer(
     Tensor elem = e.tensor;
     if (first.tensor.dtype() == DT_STRING) {
       for (int i = 0; i < elem.NumElements(); ++i) {
-        t.flat<string>()(offset + i) = elem.flat<string>()(i);
+        t.flat<tstring>()(offset + i) = elem.flat<tstring>()(i);
       }
       offset += elem.NumElements();
     } else {
@@ -110,5 +109,4 @@ Input::Initializer::Initializer(
   tensor = t;
 }
 
-}  // namespace ops
 }  // namespace tensorflow

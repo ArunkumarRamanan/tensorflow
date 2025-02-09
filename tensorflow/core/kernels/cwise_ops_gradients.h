@@ -13,11 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_CWISE_OPS_GRADIENTS_H_
-#define TENSORFLOW_KERNELS_CWISE_OPS_GRADIENTS_H_
+#ifndef TENSORFLOW_CORE_KERNELS_CWISE_OPS_GRADIENTS_H_
+#define TENSORFLOW_CORE_KERNELS_CWISE_OPS_GRADIENTS_H_
 
 #define EIGEN_USE_THREADS
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/kernels/cwise_ops.h"
 
 namespace Eigen {
@@ -26,7 +26,6 @@ namespace internal {
 // Gradient for the tanh function
 template <typename T>
 struct scalar_tanh_gradient_op {
-  EIGEN_EMPTY_STRUCT_CTOR(scalar_tanh_gradient_op)
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const T
   operator()(const T& output, const T& output_gradient) const {
     return output_gradient * (T(1) - output * output);
@@ -49,7 +48,6 @@ struct functor_traits<scalar_tanh_gradient_op<T>> {
 // Gradient for the sigmoid function
 template <typename T>
 struct scalar_sigmoid_gradient_op {
-  EIGEN_EMPTY_STRUCT_CTOR(scalar_sigmoid_gradient_op)
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const T
   operator()(const T& output, const T& output_gradient) const {
     return output_gradient * output * (T(1) - output);
@@ -72,17 +70,21 @@ struct functor_traits<scalar_sigmoid_gradient_op<T>> {
 // Gradient for the inverse function
 template <typename T>
 struct scalar_inverse_gradient_op {
-  EIGEN_EMPTY_STRUCT_CTOR(scalar_inverse_gradient_op)
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const T
   operator()(const T& output, const T& output_gradient) const {
-    const T out_conj = numext::conj(output);
-    return -output_gradient * out_conj * out_conj;
+    if (output_gradient == T(0)) {
+      return T(0);
+    } else {
+      const T out_conj = numext::conj(output);
+      return -out_conj * out_conj * output_gradient;
+    }
   }
   template <typename Packet>
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const Packet
   packetOp(const Packet& output, const Packet& output_gradient) const {
     const Packet out_conj = pconj(output);
-    return pnegate(pmul(output_gradient, pmul(out_conj, out_conj)));
+    return mul_no_nan_op<T>().packetOp(pnegate(pmul(out_conj, out_conj)),
+                                       output_gradient);
   }
 };
 template <typename T>
@@ -96,18 +98,22 @@ struct functor_traits<scalar_inverse_gradient_op<T>> {
 // Gradient for the sqrt function
 template <typename T>
 struct scalar_sqrt_gradient_op {
-  EIGEN_EMPTY_STRUCT_CTOR(scalar_sqrt_gradient_op)
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const T
   operator()(const T& output, const T& output_gradient) const {
-    const T out_conj = numext::conj(output);
-    return static_cast<T>(0.5) * output_gradient / out_conj;
+    if (output_gradient == T(0)) {
+      return T(0);
+    } else {
+      const T out_conj = numext::conj(output);
+      return (static_cast<T>(0.5) * output_gradient) / out_conj;
+    }
   }
   template <typename Packet>
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const Packet
   packetOp(const Packet& output, const Packet& output_gradient) const {
     const Packet const_half = pset1<Packet>(static_cast<T>(0.5));
     const Packet out_conj = pconj(output);
-    return pdiv(pmul(const_half, output_gradient), out_conj);
+    return mul_no_nan_op<T>().packetOp(pdiv(const_half, out_conj),
+                                       output_gradient);
   }
 };
 template <typename T>
@@ -121,20 +127,26 @@ struct functor_traits<scalar_sqrt_gradient_op<T>> {
 // Gradient for the rsqrt function
 template <typename T>
 struct scalar_rsqrt_gradient_op {
-  EIGEN_EMPTY_STRUCT_CTOR(scalar_rsqrt_gradient_op)
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const T
   operator()(const T& output, const T& output_gradient) const {
-    const T out_conj = numext::conj(output);
-    return static_cast<T>(-0.5) * (output_gradient * out_conj) *
-           (out_conj * out_conj);
+    if (output_gradient == T(0)) {
+      return T(0);
+    } else {
+      const T out_conj = numext::conj(output);
+      return static_cast<T>(-0.5) * (output_gradient * out_conj) *
+             (out_conj * out_conj);
+    }
   }
   template <typename Packet>
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const Packet
   packetOp(const Packet& output, const Packet& output_gradient) const {
     const Packet const_half = pset1<Packet>(static_cast<T>(-0.5));
     const Packet out_conj = pconj(output);
-    return pmul(const_half, pmul(pmul(output_gradient, out_conj),
-                                 pmul(out_conj, out_conj)));
+    auto safe_pmul = [](const Packet& a, const Packet& b) {
+      return mul_no_nan_op<T>().packetOp(a, b);
+    };
+    return safe_pmul(pmul(const_half, pmul(out_conj, out_conj)),
+                     safe_pmul(out_conj, output_gradient));
   }
 };
 template <typename T>
@@ -171,6 +183,7 @@ struct SimpleBinaryFunctor<CPUDevice, Functor> {
   }
 };
 
+
 template <typename T>
 struct tanh_grad : base<T, Eigen::internal::scalar_tanh_gradient_op<T>> {};
 
@@ -188,7 +201,10 @@ struct sqrt_grad : base<T, Eigen::internal::scalar_sqrt_gradient_op<T>> {};
 template <typename T>
 struct rsqrt_grad : base<T, Eigen::internal::scalar_rsqrt_gradient_op<T>> {};
 
+template <typename T>
+struct igamma_grad_a : base<T, Eigen::internal::scalar_igamma_der_a_op<T>> {};
+
 }  // end namespace functor
 
 }  // end namespace tensorflow
-#endif  // TENSORFLOW_KERNELS_CWISE_OPS_GRADIENTS_H_
+#endif  // TENSORFLOW_CORE_KERNELS_CWISE_OPS_GRADIENTS_H_

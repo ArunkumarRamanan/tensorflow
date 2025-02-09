@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <unordered_set>
 
+#include "tensorflow/core/framework/types.pb.h"
+
 namespace tensorflow {
 
 namespace {
@@ -24,13 +26,13 @@ class MemmappedTensorAllocator : public Allocator {
  public:
   MemmappedTensorAllocator() {}
 
-  Status InitializeFromRegion(const string& name, Env* env) {
+  absl::Status InitializeFromRegion(const string& name, Env* env) {
     const auto status =
         env->NewReadOnlyMemoryRegionFromFile(name, &memory_region_);
     if (!status.ok()) {
       return status;
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
   string Name() override { return "MemmappedTensorAllocator"; }
 
@@ -58,20 +60,27 @@ class MemmappedTensorAllocator : public Allocator {
       delete this;
     }
   }
-  const Status& allocation_status() const { return allocation_status_; }
+  const absl::Status& allocation_status() const { return allocation_status_; }
 
   void set_delete_on_deallocate() { delete_on_deallocate_ = true; }
+
+  // Make sure tensors or complex types (strings, variants, resources) don't get
+  // their constructor called via a placement new since that would require
+  // writing to immutable data.
+  // See also: tensorflow/core/framework/typed_allocator.h
+  bool AllocatesOpaqueHandle() const override { return true; }
 
  private:
   std::unique_ptr<ReadOnlyMemoryRegion> memory_region_;
   // If there is an error during allocation we keep it in this status.
-  Status allocation_status_;
+  absl::Status allocation_status_;
 
   // When the allocator is owned by TensorBuffer it will be deleted on
   // de-allocation.
   bool delete_on_deallocate_ = false;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(MemmappedTensorAllocator);
+  MemmappedTensorAllocator(const MemmappedTensorAllocator&) = delete;
+  void operator=(const MemmappedTensorAllocator&) = delete;
 };
 }  // namespace
 
@@ -80,6 +89,9 @@ ImmutableConstantOp::ImmutableConstantOp(OpKernelConstruction* context)
   OP_REQUIRES_OK(context,
                  context->GetAttr(kMemoryRegionNameAttr, &region_name_));
   OP_REQUIRES_OK(context, context->GetAttr(kDTypeAttr, &dtype_));
+  OP_REQUIRES(context, dtype_ != DT_RESOURCE && dtype_ != DT_VARIANT,
+              errors::InvalidArgument(
+                  "Resource and variant dtypes are invalid for this op."));
   OP_REQUIRES_OK(context, context->GetAttr(kShapeAttr, &shape_));
 }
 
@@ -89,6 +101,9 @@ void ImmutableConstantOp::Compute(OpKernelContext* ctx) {
 
   OP_REQUIRES_OK(ctx,
                  allocator->InitializeFromRegion(region_name_, ctx->env()));
+  OP_REQUIRES(ctx, dtype_ != DT_STRING,
+              errors::Unimplemented("Sorry, DT_STRING is not currently "
+                                    "supported for ImmutableConstOp."));
   ctx->set_output(0, Tensor(allocator.get(), dtype_, shape_));
   OP_REQUIRES_OK(ctx, allocator->allocation_status());
   // Allocator is owned by the tensor from this point.
@@ -96,9 +111,9 @@ void ImmutableConstantOp::Compute(OpKernelContext* ctx) {
 }
 
 ImmutableConstantOp::~ImmutableConstantOp() {}
-constexpr char ImmutableConstantOp::kDTypeAttr[];
-constexpr char ImmutableConstantOp::kShapeAttr[];
-constexpr char ImmutableConstantOp::kMemoryRegionNameAttr[];
+constexpr char const* ImmutableConstantOp::kDTypeAttr;
+constexpr char const* ImmutableConstantOp::kShapeAttr;
+constexpr char const* ImmutableConstantOp::kMemoryRegionNameAttr;
 
 REGISTER_KERNEL_BUILDER(Name("ImmutableConst").Device(DEVICE_CPU),
                         ImmutableConstantOp);

@@ -15,16 +15,19 @@ limitations under the License.
 
 #include "tensorflow/core/util/tensor_slice_reader.h"
 
+#include <climits>
+#include <memory>
 #include <utility>
 #include <vector>
-#include "tensorflow/core/framework/types.pb_text.h"
+
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/framework/versions.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/gtl/stl_util.h"
 #include "tensorflow/core/lib/io/iterator.h"
 #include "tensorflow/core/lib/io/table.h"
 #include "tensorflow/core/lib/io/table_options.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/public/version.h"
@@ -35,7 +38,7 @@ namespace tensorflow {
 
 namespace checkpoint {
 
-TensorSliceReader::Table::~Table() {}
+TensorSliceReader::Table::~Table() = default;
 
 namespace {
 class TensorSliceReaderTable : public TensorSliceReader::Table {
@@ -53,7 +56,7 @@ class TensorSliceReaderTable : public TensorSliceReader::Table {
     std::unique_ptr<table::Iterator> iter(table_->NewIterator());
     iter->Seek(key);
     if (iter->Valid() && iter->key() == key) {
-      StringPiece v = iter->value();
+      absl::string_view v = iter->value();
       value->assign(v.data(), v.size());
       return true;
     } else {
@@ -67,12 +70,12 @@ class TensorSliceReaderTable : public TensorSliceReader::Table {
 };
 }  // namespace
 
-Status OpenTableTensorSliceReader(const string& fname,
-                                  TensorSliceReader::Table** result) {
+absl::Status OpenTableTensorSliceReader(const string& fname,
+                                        TensorSliceReader::Table** result) {
   *result = nullptr;
   Env* env = Env::Default();
   std::unique_ptr<RandomAccessFile> f;
-  Status s = env->NewRandomAccessFile(fname, &f);
+  absl::Status s = env->NewRandomAccessFile(fname, &f);
   if (s.ok()) {
     uint64 file_size;
     s = env->GetFileSize(fname, &file_size);
@@ -82,13 +85,13 @@ Status OpenTableTensorSliceReader(const string& fname,
       s = table::Table::Open(options, f.get(), file_size, &table);
       if (s.ok()) {
         *result = new TensorSliceReaderTable(f.release(), table);
-        return Status::OK();
+        return absl::OkStatus();
       } else {
-        s = Status(s.code(),
-                   strings::StrCat(s.error_message(),
-                                   ": perhaps your file is in a different "
-                                   "file format and you need to use a "
-                                   "different restore operator?"));
+        s = errors::CreateWithUpdatedMessage(
+            s, strings::StrCat(s.message(),
+                               ": perhaps your file is in a different "
+                               "file format and you need to use a "
+                               "different restore operator?"));
       }
     }
   }
@@ -102,14 +105,15 @@ TensorSliceReader::TensorSliceReader(const string& filepattern)
 
 TensorSliceReader::TensorSliceReader(const string& filepattern,
                                      OpenTableFunction open_function)
-    : TensorSliceReader(filepattern, open_function, kLoadAllShards) {}
+    : TensorSliceReader(filepattern, std::move(open_function), kLoadAllShards) {
+}
 
 TensorSliceReader::TensorSliceReader(const string& filepattern,
                                      OpenTableFunction open_function,
                                      int preferred_shard)
     : filepattern_(filepattern), open_function_(std::move(open_function)) {
   VLOG(1) << "TensorSliceReader for " << filepattern;
-  Status s = Env::Default()->GetMatchingPaths(filepattern, &fnames_);
+  absl::Status s = Env::Default()->GetMatchingPaths(filepattern, &fnames_);
   if (!s.ok()) {
     status_ = errors::InvalidArgument(
         "Unsuccessful TensorSliceReader constructor: "
@@ -147,7 +151,7 @@ void TensorSliceReader::LoadShard(int shard) const {
   const string fname = fnames_[shard];
   VLOG(1) << "Reading meta data from file " << fname << "...";
   Table* table;
-  Status s = open_function_(fname, &table);
+  absl::Status s = open_function_(fname, &table);
   if (!s.ok()) {
     status_ = errors::DataLoss("Unable to open table file ", fname, ": ",
                                s.ToString());
@@ -167,9 +171,13 @@ void TensorSliceReader::LoadShard(int shard) const {
                           "checkpoint");
   if (!status_.ok()) return;
   for (const SavedSliceMeta& ssm : sts.meta().tensor()) {
-    TensorShape ssm_shape(ssm.shape());
+    TensorShape ssm_shape;
+    status_ = TensorShape::BuildTensorShapeBase(ssm.shape(), &ssm_shape);
+    if (!status_.ok()) return;
     for (const TensorSliceProto& tsp : ssm.slice()) {
-      TensorSlice ss_slice(tsp);
+      TensorSlice ss_slice;
+      status_ = TensorSlice::BuildTensorSlice(tsp, &ss_slice);
+      if (!status_.ok()) return;
       status_ = RegisterTensorSlice(ssm.name(), ssm_shape, ssm.type(), fname,
                                     ss_slice, &tensors_);
       if (!status_.ok()) return;
@@ -195,7 +203,12 @@ const TensorSliceSet* TensorSliceReader::FindTensorSlice(
   return tss;
 }
 
-TensorSliceReader::~TensorSliceReader() { gtl::STLDeleteValues(&tensors_); }
+TensorSliceReader::~TensorSliceReader() {
+  for (auto& temp : tensors_) {
+    delete temp.second;
+  }
+  tensors_.clear();
+}
 
 bool TensorSliceReader::HasTensor(const string& name, TensorShape* shape,
                                   DataType* type) const {
@@ -220,7 +233,7 @@ bool TensorSliceReader::HasTensor(const string& name, TensorShape* shape,
   }
 }
 
-Status TensorSliceReader::GetTensor(
+absl::Status TensorSliceReader::GetTensor(
     const string& name, std::unique_ptr<tensorflow::Tensor>* out_tensor) const {
   DataType type;
   TensorShape shape;
@@ -242,7 +255,18 @@ Status TensorSliceReader::GetTensor(
     slice = tss->Slices().begin()->second.slice;
   }
 
-  std::unique_ptr<tensorflow::Tensor> t(new tensorflow::Tensor(type, shape));
+  std::unique_ptr<tensorflow::Tensor> t(new tensorflow::Tensor);
+  absl::Status s = tensorflow::Tensor::BuildTensor(type, shape, t.get());
+  if (!s.ok()) return s;
+
+  for (const auto d : shape.dim_sizes()) {
+    if (d == LLONG_MAX) {
+      return errors::InvalidArgument("Unable to read dimensions of size ",
+                                     LLONG_MAX,
+                                     ". Got shape: ", shape.DebugString());
+    }
+  }
+
   bool success = false;
 
 #define READER_COPY(dt)                                                  \
@@ -259,6 +283,8 @@ Status TensorSliceReader::GetTensor(
     READER_COPY(DT_INT16);
     READER_COPY(DT_INT8);
     READER_COPY(DT_INT64);
+    READER_COPY(DT_STRING);
+    READER_COPY(DT_BOOL);
     default:
       return errors::Unimplemented("Data type not supported");
   }
@@ -269,26 +295,37 @@ Status TensorSliceReader::GetTensor(
   }
   std::swap(*out_tensor, t);
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 TensorSliceReader::VarToShapeMap TensorSliceReader::GetVariableToShapeMap()
     const {
   VarToShapeMap name_to_shape;
   if (status().ok()) {
-    for (auto e : Tensors()) {
+    for (auto& e : Tensors()) {
       name_to_shape[e.first] = e.second->shape();
     }
   }
   return name_to_shape;
 }
 
+TensorSliceReader::VarToDataTypeMap
+TensorSliceReader::GetVariableToDataTypeMap() const {
+  VarToDataTypeMap name_to_dtype;
+  if (status().ok()) {
+    for (auto& e : Tensors()) {
+      name_to_dtype[e.first] = e.second->type();
+    }
+  }
+  return name_to_dtype;
+}
+
 const string TensorSliceReader::DebugString() const {
   string shape_str;
   if (status().ok()) {
-    for (auto e : Tensors()) {
+    for (const auto& e : Tensors()) {
       strings::StrAppend(&shape_str, e.first, " (",
-                         EnumName_DataType(e.second->type()), ") ",
+                         DataType_Name(e.second->type()), ") ",
                          e.second->shape().DebugString());
       // Indicates if a tensor has more than 1 slice (i.e., it's partitioned).
       const int num_slices = e.second->Slices().size();

@@ -92,12 +92,8 @@ TEST(ManualConstructorTest, Alignment) {
 
   EXPECT_EQ(reinterpret_cast<char*>(test2.b.get()) - &test2.a,
             reinterpret_cast<char*>(&control2.b) - &control2.a);
-#ifdef ARCH_K8
-  EXPECT_EQ(reinterpret_cast<intptr_t>(test2.b.get()) % 16, 0);
-#endif
-#ifdef ARCH_PIII
-  EXPECT_EQ(reinterpret_cast<intptr_t>(test2.b.get()) % 4, 0);
-#endif
+  EXPECT_EQ(reinterpret_cast<intptr_t>(test2.b.get()) % alignof(long double),
+            0);
 }
 
 TEST(ManualConstructorTest, DefaultInitialize) {

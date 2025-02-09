@@ -17,6 +17,7 @@ limitations under the License.
 
 #include "tensorflow/core/framework/op.h"
 
+#include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -24,10 +25,11 @@ namespace tensorflow {
 namespace {
 
 void Register(const string& op_name, OpRegistry* registry) {
-  registry->Register([op_name](OpRegistrationData* op_reg_data) -> Status {
-    op_reg_data->op_def.set_name(op_name);
-    return Status::OK();
-  });
+  registry->Register(
+      [op_name](OpRegistrationData* op_reg_data) -> absl::Status {
+        op_reg_data->op_def.set_name(op_name);
+        return absl::OkStatus();
+      });
 }
 
 }  // namespace
@@ -44,13 +46,14 @@ TEST(OpRegistrationTest, TestBasic) {
 TEST(OpRegistrationTest, TestDuplicate) {
   std::unique_ptr<OpRegistry> registry(new OpRegistry);
   Register("Foo", registry.get());
-  Status s = registry->ProcessRegistrations();
+  absl::Status s = registry->ProcessRegistrations();
   EXPECT_TRUE(s.ok());
 
-  registry->SetWatcher([](const Status& s, const OpDef& op_def) -> Status {
-    EXPECT_TRUE(errors::IsAlreadyExists(s));
-    return Status::OK();
-  });
+  TF_EXPECT_OK(registry->SetWatcher(
+      [](const absl::Status& s, const OpDef& op_def) -> absl::Status {
+        EXPECT_TRUE(errors::IsAlreadyExists(s));
+        return absl::OkStatus();
+      }));
   Register("Foo", registry.get());
   s = registry->ProcessRegistrations();
   EXPECT_TRUE(s.ok());

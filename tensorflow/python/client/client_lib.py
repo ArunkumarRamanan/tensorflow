@@ -13,42 +13,10 @@
 # limitations under the License.
 # ==============================================================================
 
-"""This library contains classes for launching graphs and executing operations.
+"""Support for launching graphs and executing operations.
 
-The [basic usage](../../get_started/index.md#basic-usage) guide has
-examples of how a graph is launched in a [`tf.Session`](#Session).
-
-## Session management
-
-@@Session
-@@InteractiveSession
-
-@@get_default_session
-
-## Error classes
-
-@@OpError
-@@CancelledError
-@@UnknownError
-@@InvalidArgumentError
-@@DeadlineExceededError
-@@NotFoundError
-@@AlreadyExistsError
-@@PermissionDeniedError
-@@UnauthenticatedError
-@@ResourceExhaustedError
-@@FailedPreconditionError
-@@AbortedError
-@@OutOfRangeError
-@@UnimplementedError
-@@InternalError
-@@UnavailableError
-@@DataLossError
+See the [Client](https://www.tensorflow.org/guide/graphs) guide.
 """
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 # pylint: disable=unused-import
 from tensorflow.python.client.session import InteractiveSession

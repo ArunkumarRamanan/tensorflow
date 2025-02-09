@@ -13,11 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_FRAMEWORK_TENSOR_SLICE_H_
-#define TENSORFLOW_FRAMEWORK_TENSOR_SLICE_H_
+#ifndef TENSORFLOW_CORE_FRAMEWORK_TENSOR_SLICE_H_
+#define TENSORFLOW_CORE_FRAMEWORK_TENSOR_SLICE_H_
 
 #include <string>
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_slice.pb.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -45,12 +45,19 @@ class TensorSlice {
   TensorSlice() {}
   explicit TensorSlice(int dim);
   explicit TensorSlice(const TensorSliceProto& proto);
-  explicit TensorSlice(std::initializer_list<std::pair<int64, int64>> extents);
+  explicit TensorSlice(
+      std::initializer_list<std::pair<int64_t, int64_t>> extents);
 
-  static Status Parse(const string& str, TensorSlice* output);
+  // This factory methods should be used instead of the constructor that takes a
+  // `TensorSliceProto` if calling code cannot validate that the sizes specify a
+  // valid `TensorSlice`.
+  static absl::Status BuildTensorSlice(const TensorSliceProto& proto,
+                                       TensorSlice* output);
+
+  static absl::Status Parse(const string& str, TensorSlice* output);
   static TensorSlice ParseOrDie(const string& str) {
     TensorSlice ret;
-    Status s = Parse(str, &ret);
+    absl::Status s = Parse(str, &ret);
     if (!s.ok()) {
       LOG(FATAL) << "Could not parse TensorSlice";
     }
@@ -62,32 +69,32 @@ class TensorSlice {
   // Accessors
   int dims() const { return starts_.size(); }
 
-  int64 start(int d) const {
+  int64_t start(int d) const {
     DCHECK_GE(d, 0);
     DCHECK_LT(d, dims());
     return starts_[d];
   }
 
-  int64 length(int d) const {
+  int64_t length(int d) const {
     DCHECK_GE(d, 0);
     DCHECK_LT(d, dims());
     return lengths_[d];
   }
 
-  int64 end(int d) const {
+  int64_t end(int d) const {
     DCHECK_GE(d, 0);
     DCHECK_LT(d, dims());
     return start(d) + length(d);
   }
 
-  void set_start(int d, int64 x) {
+  void set_start(int d, int64_t x) {
     DCHECK_GE(d, 0);
     DCHECK_LT(d, dims());
     DCHECK_GE(x, 0);
     starts_[d] = x;
   }
 
-  void set_length(int d, int64 x) {
+  void set_length(int d, int64_t x) {
     DCHECK_GE(d, 0);
     DCHECK_LT(d, dims());
     lengths_[d] = x;
@@ -126,7 +133,7 @@ class TensorSlice {
   // Interaction with other TensorSlices.
 
   // Compute the intersection with another slice and if "result" is not
-  // nullptr, store the results in *result; returns true is there is any real
+  // nullptr, store the results in *result; returns true if there is any real
   // intersection.
   bool Intersect(const TensorSlice& other, TensorSlice* result) const;
   // A short hand.
@@ -144,8 +151,8 @@ class TensorSlice {
   // Requires that the shape and *this have the same rank.
   // For example, given a tensor shape of {3, 4, 5}, and a slice of
   // 1,2:-:0,2, the result shape is {2, 4, 2}.
-  Status SliceTensorShape(const TensorShape& shape,
-                          TensorShape* result_shape) const;
+  absl::Status SliceTensorShape(const TensorShape& shape,
+                                TensorShape* result_shape) const;
 
   // Given slice "sub" where "sub" is fully contained in *this,
   // (meaning that the intersection of "sub" and *this equals "sub"), computes
@@ -182,17 +189,17 @@ class TensorSlice {
 
   // Returns the value of the length field in an Extent, or -1 if it
   // is not present.
-  static int64 GetExtentLength(const TensorSliceProto::Extent& extent);
+  static int64_t GetExtentLength(const TensorSliceProto::Extent& extent);
 
  private:
   // a length value of kFullExtent (-1) means we have a full slice at this
   // dimension. It's defined in tensor_slice.cc.
-  static const int64 kFullExtent;
+  static const int64_t kFullExtent;
 
   // TODO(yangke): switch to Eigen once it supports variable size arrays.
   // A value of
-  gtl::InlinedVector<int64, 4> starts_;
-  gtl::InlinedVector<int64, 4> lengths_;
+  absl::InlinedVector<int64_t, 4UL> starts_;
+  absl::InlinedVector<int64_t, 4UL> lengths_;
 };
 
 template <int NDIMS>
@@ -221,4 +228,4 @@ void TensorSlice::FillIndicesAndSizes(
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_FRAMEWORK_TENSOR_SLICE_H_
+#endif  // TENSORFLOW_CORE_FRAMEWORK_TENSOR_SLICE_H_

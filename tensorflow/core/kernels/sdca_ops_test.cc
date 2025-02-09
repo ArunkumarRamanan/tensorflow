@@ -57,6 +57,7 @@ Node* Var(Graph* const g, const int n) {
 std::vector<Node*> VarVector(Graph* const g, const int nodes,
                              const int node_size) {
   std::vector<Node*> result;
+  result.reserve(nodes);
   for (int i = 0; i < nodes; ++i) {
     result.push_back(Var(g, node_size));
   }
@@ -79,7 +80,7 @@ Node* Ones(Graph* const g, const int n) {
 
 Node* SparseIndices(Graph* const g, const int sparse_features_per_group) {
   Tensor data(DT_INT64, TensorShape({sparse_features_per_group}));
-  test::FillFn<int64>(&data, [&](const int i) { return i; });
+  test::FillFn<int64_t>(&data, [&](const int i) { return i; });
   return test::graph::Constant(g, data);
 }
 
@@ -87,7 +88,7 @@ Node* SparseExampleIndices(Graph* const g, const int sparse_features_per_group,
                            const int num_examples) {
   const int x_size = num_examples * 4;
   Tensor data(DT_INT64, TensorShape({x_size}));
-  test::FillFn<int64>(&data, [&](const int i) { return i / 4; });
+  test::FillFn<int64_t>(&data, [&](const int i) { return i / 4; });
   return test::graph::Constant(g, data);
 }
 
@@ -95,7 +96,7 @@ Node* SparseFeatureIndices(Graph* const g, const int sparse_features_per_group,
                            const int num_examples) {
   const int x_size = num_examples * 4;
   Tensor data(DT_INT64, TensorShape({x_size}));
-  test::FillFn<int64>(
+  test::FillFn<int64_t>(
       &data, [&](const int i) { return i % sparse_features_per_group; });
   return test::graph::Constant(g, data);
 }
@@ -118,10 +119,11 @@ Node* RandomZeroOrOneMatrix(Graph* const g, const int n, int d) {
   return test::graph::Constant(g, data);
 }
 
-void GetGraphs(const int32 num_examples, const int32 num_sparse_feature_groups,
-               const int32 sparse_features_per_group,
-               const int32 num_dense_feature_groups,
-               const int32 dense_features_per_group, Graph** const init_g,
+void GetGraphs(const int32_t num_examples,
+               const int32_t num_sparse_feature_groups,
+               const int32_t sparse_features_per_group,
+               const int32_t num_dense_feature_groups,
+               const int32_t dense_features_per_group, Graph** const init_g,
                Graph** train_g) {
   {
     // Build initialization graph
@@ -164,6 +166,7 @@ void GetGraphs(const int32 num_examples, const int32 num_sparse_feature_groups,
       sparse_weights.push_back(NodeBuilder::NodeOut(n));
     }
     std::vector<NodeBuilder::NodeOut> dense_weights;
+    dense_weights.reserve(dense_weight_nodes.size());
     for (Node* n : dense_weight_nodes) {
       dense_weights.push_back(NodeBuilder::NodeOut(n));
     }
@@ -171,20 +174,24 @@ void GetGraphs(const int32 num_examples, const int32 num_sparse_feature_groups,
     std::vector<NodeBuilder::NodeOut> sparse_example_indices;
     std::vector<NodeBuilder::NodeOut> sparse_feature_indices;
     std::vector<NodeBuilder::NodeOut> sparse_values;
+    sparse_example_indices.reserve(num_sparse_feature_groups);
     for (int i = 0; i < num_sparse_feature_groups; ++i) {
       sparse_example_indices.push_back(NodeBuilder::NodeOut(
           SparseExampleIndices(g, sparse_features_per_group, num_examples)));
     }
+    sparse_feature_indices.reserve(num_sparse_feature_groups);
     for (int i = 0; i < num_sparse_feature_groups; ++i) {
       sparse_feature_indices.push_back(NodeBuilder::NodeOut(
           SparseFeatureIndices(g, sparse_features_per_group, num_examples)));
     }
+    sparse_values.reserve(num_sparse_feature_groups);
     for (int i = 0; i < num_sparse_feature_groups; ++i) {
       sparse_values.push_back(
           NodeBuilder::NodeOut(RandomZeroOrOne(g, num_examples * 4)));
     }
 
     std::vector<NodeBuilder::NodeOut> dense_features;
+    dense_features.reserve(num_dense_feature_groups);
     for (int i = 0; i < num_dense_feature_groups; ++i) {
       dense_features.push_back(NodeBuilder::NodeOut(
           RandomZeroOrOneMatrix(g, num_examples, dense_features_per_group)));
@@ -221,31 +228,47 @@ void GetGraphs(const int32 num_examples, const int32 num_sparse_feature_groups,
   }
 }
 
-void BM_SDCA(const int iters, const int num_examples) {
-  testing::StopTiming();
+void BM_SDCA(::testing::benchmark::State& state) {
+  const int num_examples = state.range(0);
   Graph* init = nullptr;
   Graph* train = nullptr;
   GetGraphs(num_examples, 20 /* sparse feature groups */,
             5 /* sparse features per group */, 1 /* dense feature groups*/,
             20 /* dense features per group */, &init, &train);
-  testing::StartTiming();
-  test::Benchmark("cpu", train, GetSingleThreadedOptions(), init).Run(iters);
+  test::Benchmark("cpu", train, GetSingleThreadedOptions(), init, nullptr, "",
+                  /*old_benchmark_api*/ false)
+      .Run(state);
 }
 
-void BM_SDCA_LARGE_SPARSE(const int iters, const int num_examples) {
-  testing::StopTiming();
+void BM_SDCA_LARGE_DENSE(::testing::benchmark::State& state) {
+  const int num_examples = state.range(0);
+
+  Graph* init = nullptr;
+  Graph* train = nullptr;
+  GetGraphs(num_examples, 0 /* sparse feature groups */,
+            0 /* sparse features per group */, 5 /* dense feature groups*/,
+            200000 /* dense features per group */, &init, &train);
+  test::Benchmark("cpu", train, GetSingleThreadedOptions(), init, nullptr, "",
+                  /*old_benchmark_api*/ false)
+      .Run(state);
+}
+
+void BM_SDCA_LARGE_SPARSE(::testing::benchmark::State& state) {
+  const int num_examples = state.range(0);
+
   Graph* init = nullptr;
   Graph* train = nullptr;
   GetGraphs(num_examples, 65 /* sparse feature groups */,
             1e6 /* sparse features per group */, 0 /* dense feature groups*/,
             0 /* dense features per group */, &init, &train);
-  testing::StartTiming();
-  test::Benchmark("cpu", train, GetMultiThreadedOptions(), init).Run(iters);
+  test::Benchmark("cpu", train, GetMultiThreadedOptions(), init, nullptr, "",
+                  /*old_benchmark_api*/ false)
+      .Run(state);
 }
-
 }  // namespace
 
 BENCHMARK(BM_SDCA)->Arg(128)->Arg(256)->Arg(512)->Arg(1024);
+BENCHMARK(BM_SDCA_LARGE_DENSE)->Arg(128)->Arg(256)->Arg(512)->Arg(1024);
 BENCHMARK(BM_SDCA_LARGE_SPARSE)->Arg(128)->Arg(256)->Arg(512)->Arg(1024);
 
 }  // namespace tensorflow

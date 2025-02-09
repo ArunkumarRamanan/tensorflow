@@ -13,97 +13,41 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_CORE_PLATFORM_GCS_FILE_SYSTEM_H_
-#define TENSORFLOW_CORE_PLATFORM_GCS_FILE_SYSTEM_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_CLOUD_GCS_FILE_SYSTEM_H_
+#define TENSORFLOW_CORE_PLATFORM_CLOUD_GCS_FILE_SYSTEM_H_
 
 #include <string>
+#include <unordered_set>
+#include <utility>
 #include <vector>
-#include "tensorflow/core/lib/core/status.h"
+
+#include "xla/tsl/platform/cloud/gcs_file_system.h"
 #include "tensorflow/core/platform/cloud/auth_provider.h"
+#include "tensorflow/core/platform/cloud/compute_engine_metadata_client.h"
+#include "tensorflow/core/platform/cloud/compute_engine_zone_provider.h"
+#include "tensorflow/core/platform/cloud/expiring_lru_cache.h"
+#include "tensorflow/core/platform/cloud/file_block_cache.h"
+#include "tensorflow/core/platform/cloud/gcs_dns_cache.h"
+#include "tensorflow/core/platform/cloud/gcs_throttle.h"
 #include "tensorflow/core/platform/cloud/http_request.h"
-#include "tensorflow/core/platform/cloud/retrying_file_system.h"
 #include "tensorflow/core/platform/file_system.h"
+#include "tensorflow/core/platform/retrying_file_system.h"
+#include "tensorflow/core/platform/status.h"
 
 namespace tensorflow {
-
-/// Google Cloud Storage implementation of a file system.
-///
-/// The clients should use RetryingGcsFileSystem defined below,
-/// which adds retry logic to GCS operations.
-class GcsFileSystem : public FileSystem {
- public:
-  GcsFileSystem();
-  GcsFileSystem(std::unique_ptr<AuthProvider> auth_provider,
-                std::unique_ptr<HttpRequest::Factory> http_request_factory,
-                size_t read_ahead_bytes, int32 max_upload_attempts);
-
-  Status NewRandomAccessFile(
-      const string& filename,
-      std::unique_ptr<RandomAccessFile>* result) override;
-
-  Status NewWritableFile(const string& fname,
-                         std::unique_ptr<WritableFile>* result) override;
-
-  Status NewAppendableFile(const string& fname,
-                           std::unique_ptr<WritableFile>* result) override;
-
-  Status NewReadOnlyMemoryRegionFromFile(
-      const string& filename,
-      std::unique_ptr<ReadOnlyMemoryRegion>* result) override;
-
-  bool FileExists(const string& fname) override;
-
-  Status Stat(const string& fname, FileStatistics* stat) override;
-
-  Status GetChildren(const string& dir, std::vector<string>* result) override;
-
-  Status GetMatchingPaths(const string& pattern,
-                          std::vector<string>* results) override;
-
-  Status DeleteFile(const string& fname) override;
-
-  Status CreateDir(const string& dirname) override;
-
-  Status DeleteDir(const string& dirname) override;
-
-  Status GetFileSize(const string& fname, uint64* file_size) override;
-
-  Status RenameFile(const string& src, const string& target) override;
-
-  Status IsDirectory(const string& fname) override;
-
- private:
-  Status BucketExists(const string& bucket);
-  Status ObjectExists(const string& bucket, const string& object);
-  Status FolderExists(const string& dirname);
-  Status GetChildrenBounded(const string& dir, uint64 max_results,
-                            std::vector<string>* result, bool recursively);
-  /// Retrieves file statistics assuming fname points to a GCS object.
-  Status StatForObject(const string& bucket, const string& object,
-                       FileStatistics* stat);
-  Status RenameObject(const string& src, const string& target);
-
-  std::unique_ptr<AuthProvider> auth_provider_;
-  std::unique_ptr<HttpRequest::Factory> http_request_factory_;
-
-  // The number of bytes to read ahead for buffering purposes in the
-  // RandomAccessFile implementation. Defaults to 256Mb.
-  const size_t read_ahead_bytes_ = 256 * 1024 * 1024;
-
-  // The max number of attempts to upload a file to GCS using the resumable
-  // upload API.
-  const int32 max_upload_attempts_ = 5;
-
-  TF_DISALLOW_COPY_AND_ASSIGN(GcsFileSystem);
-};
-
-/// Google Cloud Storage implementation of a file system with retry on failures.
-class RetryingGcsFileSystem : public RetryingFileSystem {
- public:
-  RetryingGcsFileSystem()
-      : RetryingFileSystem(std::unique_ptr<FileSystem>(new GcsFileSystem)) {}
-};
-
+// NOLINTBEGIN(misc-unused-using-decls)
+using tsl::GcsFileSystem;
+using tsl::GcsStatsInterface;
+using tsl::GetEnvVar;
+using tsl::kBlockSize;
+using tsl::kDefaultBlockSize;
+using tsl::kDefaultMaxCacheSize;
+using tsl::kDefaultMaxStaleness;
+using tsl::kMaxCacheSize;
+using tsl::kMaxStaleness;
+using tsl::RetryingGcsFileSystem;
+using tsl::UploadSessionHandle;
+// NOLINTEND(misc-unused-using-decls)
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_PLATFORM_GCS_FILE_SYSTEM_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_CLOUD_GCS_FILE_SYSTEM_H_

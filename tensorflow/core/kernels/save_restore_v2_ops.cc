@@ -15,21 +15,26 @@ limitations under the License.
 
 // See docs in ../ops/io_ops.cc.
 
+#include <cstddef>
+#include <limits>
 #include <string>
 #include <vector>
 
+#include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/core/kernels/bounds_check.h"
+#include "tensorflow/core/kernels/checkpoint_callback_manager.h"
 #include "tensorflow/core/kernels/save_restore_tensor.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/platform/env.h"
-#include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/logging.h"  // IWYU pragma: keep
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/saved_tensor_slice_util.h"
+#include "tensorflow/core/util/tensor_bundle/naming.h"
 #include "tensorflow/core/util/tensor_bundle/tensor_bundle.h"
 #include "tensorflow/core/util/tensor_slice_reader.h"
 
@@ -47,8 +52,9 @@ void ValidateInputs(bool is_save_op, OpKernelContext* context,
       context, prefix.NumElements() == 1,
       errors::InvalidArgument("Input prefix should have a single element, got ",
                               prefix.NumElements(), " instead."));
-  OP_REQUIRES(context, TensorShapeUtils::IsVector(tensor_names.shape()) &&
-                           TensorShapeUtils::IsVector(shape_and_slices.shape()),
+  OP_REQUIRES(context,
+              TensorShapeUtils::IsVector(tensor_names.shape()) &&
+                  TensorShapeUtils::IsVector(shape_and_slices.shape()),
               errors::InvalidArgument(
                   "Input tensor_names and shape_and_slices "
                   "should be an 1-D tensors, got ",
@@ -97,19 +103,22 @@ class SaveV2 : public OpKernel {
     const Tensor& shape_and_slices = context->input(2);
     ValidateInputs(true /* is save op */, context, prefix, tensor_names,
                    shape_and_slices);
+    if (!context->status().ok()) return;
 
     const int kFixedInputs = 3;  // Prefix, tensor names, shape_and_slices.
     const int num_tensors = static_cast<int>(tensor_names.NumElements());
-    const string& prefix_string = prefix.scalar<string>()();
-    const auto& tensor_names_flat = tensor_names.flat<string>();
-    const auto& shape_and_slices_flat = shape_and_slices.flat<string>();
+    const string& prefix_string = prefix.scalar<tstring>()();
+    const auto& tensor_names_flat = tensor_names.flat<tstring>();
+    const auto& shape_and_slices_flat = shape_and_slices.flat<tstring>();
 
     BundleWriter writer(Env::Default(), prefix_string);
+    OP_REQUIRES_OK(context, writer.status());
     VLOG(1) << "BundleWriter, prefix_string: " << prefix_string;
 
     for (int i = 0; i < num_tensors; ++i) {
       const string& tensor_name = tensor_names_flat(i);
       const Tensor& tensor = context->input(i + kFixedInputs);
+      VLOG(2) << "Starting save of " << tensor_name;
 
       if (!shape_and_slices_flat(i).empty()) {
         const string& shape_spec = shape_and_slices_flat(i);
@@ -126,12 +135,52 @@ class SaveV2 : public OpKernel {
                                             shape_spec, ", tensor: ",
                                             tensor.shape().DebugString()));
 
-        writer.AddSlice(tensor_name, shape, slice, tensor);
+        OP_REQUIRES_OK(context,
+                       writer.AddSlice(tensor_name, shape, slice, tensor));
       } else {
-        writer.Add(tensor_name, tensor);
+        OP_REQUIRES_OK(context, writer.Add(tensor_name, tensor));
       }
+
+      if (VLOG_IS_ON(5)) {
+        if (tensor.dtype() == DT_FLOAT) {
+          const float* t_data = tensor.flat<float>().data();
+          float min = std::numeric_limits<float>::infinity();
+          float max = -std::numeric_limits<float>::infinity();
+          double avg = 0.0;
+          for (int i = 0; i < tensor.NumElements(); ++i) {
+            if (t_data[i] < min) min = t_data[i];
+            if (t_data[i] > max) max = t_data[i];
+            avg += t_data[i];
+          }
+          VLOG(5) << " min " << min << " max " << max << " avg "
+                  << avg / tensor.NumElements() << " total elts "
+                  << tensor.NumElements();
+        }
+      }
+
+      VLOG(2) << "Done save of " << tensor_name;
     }
     OP_REQUIRES_OK(context, writer.Finish());
+    VLOG(1) << "Done BundleWriter, prefix_string: " << prefix_string;
+
+    ResourceMgr* resource_manager = context->resource_manager();
+    if (resource_manager != nullptr) {
+      checkpoint::CheckpointCallbackManager* checkpoint_callback_manager;
+      OP_REQUIRES_OK(
+          context,
+          resource_manager
+              ->LookupOrCreate<checkpoint::CheckpointCallbackManager>(
+                  resource_manager->default_container(),
+                  std::string(
+                      checkpoint::kCheckpointCallbackManagerResourceName),
+                  &checkpoint_callback_manager,
+                  [](checkpoint::CheckpointCallbackManager** out) {
+                    *out = new checkpoint::CheckpointCallbackManager();
+                    return absl::OkStatus();
+                  }));
+      checkpoint_callback_manager->Save(prefix_string);
+      checkpoint_callback_manager->Unref();
+    }
   }
 };
 REGISTER_KERNEL_BUILDER(Name("SaveV2").Device(DEVICE_CPU), SaveV2);
@@ -153,9 +202,11 @@ class RestoreV2 : public OpKernel {
                                         " expected dtypes."));
     ValidateInputs(false /* not save op */, context, prefix, tensor_names,
                    shape_and_slices);
+    if (!context->status().ok()) return;
 
-    const string& prefix_string = prefix.scalar<string>()();
+    const string& prefix_string = prefix.scalar<tstring>()();
 
+    VLOG(2) << "Started Restore at prefix: " << prefix_string;
     // Intention: we plan to use the RestoreV2 op as a backward-compatible
     // reader as we upgrade to the V2 format.  This allows transparent upgrade.
     // We here attempt to read a V1 checkpoint, if "prefix_string" does not
@@ -164,15 +215,42 @@ class RestoreV2 : public OpKernel {
     std::vector<string> paths;
     if (!env->GetMatchingPaths(MetaFilename(prefix_string), &paths).ok() ||
         paths.empty()) {
+      VLOG(2) << "Fallback to V1 Restore at prefix: " << prefix_string;
       // Cannot find V2's metadata file, so "prefix_string" does not point to a
       // V2 checkpoint.  Invokes the V1 read path instead.
-      RestoreTensor(context, &checkpoint::OpenTableTensorSliceReader,
-                    /* preferred_shard */ -1, /* restore_slice */ true);
+      for (size_t i = 0; i < tensor_names.NumElements(); ++i) {
+        RestoreTensor(context, &checkpoint::OpenTableTensorSliceReader,
+                      /* preferred_shard */ -1, /* restore_slice */ true,
+                      /* restore_index */ i);
+        if (!context->status().ok()) {
+          return;
+        }
+      }
       return;
     }
     // If found, invokes the V2 reader.
     OP_REQUIRES_OK(context, RestoreTensorsV2(context, prefix, tensor_names,
                                              shape_and_slices, dtypes_));
+
+    ResourceMgr* resource_manager = context->resource_manager();
+    if (resource_manager != nullptr) {
+      checkpoint::CheckpointCallbackManager* checkpoint_callback_manager;
+      OP_REQUIRES_OK(
+          context,
+          resource_manager
+              ->LookupOrCreate<checkpoint::CheckpointCallbackManager>(
+                  resource_manager->default_container(),
+                  std::string(
+                      checkpoint::kCheckpointCallbackManagerResourceName),
+                  &checkpoint_callback_manager,
+                  [](checkpoint::CheckpointCallbackManager** out) {
+                    *out = new checkpoint::CheckpointCallbackManager();
+                    return absl::OkStatus();
+                  }));
+      checkpoint_callback_manager->Restore(prefix_string);
+      checkpoint_callback_manager->Unref();
+    }
+    VLOG(2) << "Finished Restore at prefix: " << prefix_string;
   }
 
  private:
@@ -186,7 +264,10 @@ class MergeV2Checkpoints : public OpKernel {
  public:
   explicit MergeV2Checkpoints(OpKernelConstruction* context)
       : OpKernel(context) {
-    context->GetAttr("delete_old_dirs", &delete_old_dirs_);
+    OP_REQUIRES_OK(context,
+                   context->GetAttr("delete_old_dirs", &delete_old_dirs_));
+    OP_REQUIRES_OK(context, context->GetAttr("allow_missing_files",
+                                             &allow_missing_files_));
   }
 
   void Compute(OpKernelContext* context) override {
@@ -202,19 +283,20 @@ class MergeV2Checkpoints : public OpKernel {
                     "Input destination_prefix should be a scalar tensor, got ",
                     destination_prefix.shape().DebugString(), " instead."));
 
-    const gtl::ArraySlice<string> input_prefixes =
-        gtl::ArraySlice<string>(checkpoint_prefixes.flat<string>());
+    const absl::Span<const tstring> input_prefixes =
+        absl::Span<const tstring>(checkpoint_prefixes.flat<tstring>());
     Env* env = Env::Default();
-    const string& merged_prefix = destination_prefix.scalar<string>()();
-    OP_REQUIRES_OK(
-        context, tensorflow::MergeBundles(env, input_prefixes, merged_prefix));
+    const string& merged_prefix = destination_prefix.scalar<tstring>()();
+    OP_REQUIRES_OK(context,
+                   tensorflow::MergeBundles(env, input_prefixes, merged_prefix,
+                                            allow_missing_files_));
 
     if (delete_old_dirs_) {
-      const string& merged_dir = io::Dirname(merged_prefix).ToString();
+      const string merged_dir(io::Dirname(merged_prefix));
       for (const string& input_prefix : input_prefixes) {
-        const string& dirname = io::Dirname(input_prefix).ToString();
+        const string dirname(io::Dirname(input_prefix));
         if (dirname == merged_dir) continue;
-        Status status = env->DeleteDir(dirname);
+        absl::Status status = env->DeleteDir(dirname);
         // For sharded save, only the first delete will go through and all
         // others will hit NotFound.  Use vlog to be less verbose.
         if (!status.ok()) VLOG(1) << status;
@@ -225,6 +307,10 @@ class MergeV2Checkpoints : public OpKernel {
  private:
   // On merge, whether or not to delete the input (temporary) directories.
   bool delete_old_dirs_;
+
+  // On merge, whether or not to relax condition that all input prefix filenames
+  // to exist.
+  bool allow_missing_files_;
 };
 REGISTER_KERNEL_BUILDER(Name("MergeV2Checkpoints").Device(DEVICE_CPU),
                         MergeV2Checkpoints);

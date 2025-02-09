@@ -58,21 +58,118 @@ Alternatively:
       self.assertProtoEqual(a, b)
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import collections
-
-import six
+import collections.abc as collections_abc
+import difflib
+import math
 
 from google.protobuf import descriptor
+from google.protobuf import descriptor_pool
 from google.protobuf import message
 from google.protobuf import text_format
 
 
-def assertProtoEqual(self, a, b, check_initialized=True,
-                     normalize_numbers=False, msg=None):
+# TODO(alankelly): Distinguish between signalling and quiet NaNs.
+def isClose(x, y, relative_tolerance):  # pylint: disable=invalid-name
+  """Returns True if x is close to y given the relative tolerance or if x and y are both inf, both -inf, or both NaNs.
+
+  This function does not distinguish between signalling and non-signalling NaN.
+
+  Args:
+    x: float value to be compared
+    y: float value to be compared
+    relative_tolerance: float. The allowable difference between the two values
+      being compared is determined by multiplying the relative tolerance by the
+      maximum of the two values. If this is not provided, then all floats are
+      compared using string comparison.
+  """
+  # NaNs are considered equal.
+  if math.isnan(x) or math.isnan(y):
+    return math.isnan(x) == math.isnan(y)
+
+  if math.isinf(x) or math.isinf(y):
+    return x == y
+
+  return abs(x - y) <= relative_tolerance * max(abs(x), abs(y))
+
+
+def checkFloatEqAndReplace(self, expected, actual, relative_tolerance):  # pylint: disable=invalid-name
+  """Recursively replaces the floats in actual with those in expected iff they are approximately equal.
+
+  This is done because string equality will consider values such as 5.0999999999
+  and 5.1 as not being equal, despite being extremely close.
+
+  Args:
+    self: googletest.TestCase
+    expected: expected values
+    actual: actual values
+    relative_tolerance: float, relative tolerance.
+  """
+
+  for expected_fields, actual_fields in zip(
+      expected.ListFields(), actual.ListFields()
+  ):
+    is_repeated = True
+    expected_desc, expected_values = expected_fields
+    actual_values = actual_fields[1]
+    if expected_desc.label != descriptor.FieldDescriptor.LABEL_REPEATED:
+      is_repeated = False
+      expected_values = [expected_values]
+      actual_values = [actual_values]
+
+    if (
+        expected_desc.type == descriptor.FieldDescriptor.TYPE_FLOAT
+        or expected_desc.type == descriptor.FieldDescriptor.TYPE_DOUBLE
+    ):
+      for i, (x, y) in enumerate(zip(expected_values, actual_values)):
+        # Replace the actual value with the expected value if the test passes,
+        # otherwise leave it and let it fail in the next test so that the error
+        # message is nicely formatted
+        if isClose(x, y, relative_tolerance):
+          if is_repeated:
+            getattr(actual, actual_fields[0].name)[i] = x
+          else:
+            setattr(actual, actual_fields[0].name, x)
+
+    if (
+        expected_desc.type == descriptor.FieldDescriptor.TYPE_MESSAGE
+        or expected_desc.type == descriptor.FieldDescriptor.TYPE_GROUP
+    ):
+      if (
+          expected_desc.type == descriptor.FieldDescriptor.TYPE_MESSAGE
+          and expected_desc.message_type.has_options
+          and expected_desc.message_type.GetOptions().map_entry
+      ):
+        # This is a map, only recurse if it has type message type.
+        if (
+            expected_desc.message_type.fields_by_number[2].type
+            == descriptor.FieldDescriptor.TYPE_MESSAGE
+        ):
+          for e_v, a_v in zip(
+              iter(expected_values.values()), iter(actual_values.values())
+          ):
+            checkFloatEqAndReplace(
+                self,
+                expected=e_v,
+                actual=a_v,
+                relative_tolerance=relative_tolerance,
+            )
+      else:
+        for v, a in zip(expected_values, actual_values):
+          # recursive step
+          checkFloatEqAndReplace(
+              self, expected=v, actual=a, relative_tolerance=relative_tolerance
+          )
+
+
+def assertProtoEqual(
+    self,
+    a,
+    b,
+    check_initialized=True,
+    normalize_numbers=False,
+    msg=None,
+    relative_tolerance=None,
+):  # pylint: disable=invalid-name(
   """Fails with a useful error if a and b aren't equal.
 
   Comparison of repeated fields matches the semantics of
@@ -80,16 +177,20 @@ def assertProtoEqual(self, a, b, check_initialized=True,
 
   Args:
     self: googletest.TestCase
-    a: proto2 PB instance, or text string representing one
-    b: proto2 PB instance -- message.Message or subclass thereof
+    a: proto2 PB instance, or text string representing one.
+    b: proto2 PB instance -- message.Message or subclass thereof.
     check_initialized: boolean, whether to fail if either a or b isn't
-      initialized
+      initialized.
     normalize_numbers: boolean, whether to normalize types and precision of
       numbers before comparison.
-    msg: if specified, is used as the error message on failure
+    msg: if specified, is used as the error message on failure.
+    relative_tolerance: float, relative tolerance. If this is not provided, then
+      all floats are compared using string comparison otherwise, floating point
+      comparisons are done using the relative tolerance provided.
   """
-  if isinstance(a, six.string_types):
-    a = text_format.Merge(a, b.__class__())
+  pool = descriptor_pool.Default()
+  if isinstance(a, str):
+    a = text_format.Parse(a, b.__class__(), descriptor_pool=pool)
 
   for pb in a, b:
     if check_initialized:
@@ -99,9 +200,25 @@ def assertProtoEqual(self, a, b, check_initialized=True,
     if normalize_numbers:
       NormalizeNumberFields(pb)
 
-  self.assertMultiLineEqual(text_format.MessageToString(a),
-                            text_format.MessageToString(b),
-                            msg=msg)
+  if relative_tolerance is not None:
+    checkFloatEqAndReplace(
+        self, expected=b, actual=a, relative_tolerance=relative_tolerance
+    )
+
+  a_str = text_format.MessageToString(a, descriptor_pool=pool)
+  b_str = text_format.MessageToString(b, descriptor_pool=pool)
+
+  # Some Python versions would perform regular diff instead of multi-line
+  # diff if string is longer than 2**16. We substitute this behavior
+  # with a call to unified_diff instead to have easier-to-read diffs.
+  # For context, see: https://bugs.python.org/issue11763.
+  if len(a_str) < 2**16 and len(b_str) < 2**16:
+    self.assertMultiLineEqual(a_str, b_str, msg=msg)
+  else:
+    diff = ''.join(
+        difflib.unified_diff(a_str.splitlines(True), b_str.splitlines(True)))
+    if diff:
+      self.fail('%s :\n%s' % (msg, diff))
 
 
 def NormalizeNumberFields(pb):
@@ -117,14 +234,14 @@ def NormalizeNumberFields(pb):
   Modifies pb in place. Recurses into nested objects.
 
   Args:
-    pb: proto2 message
+    pb: proto2 message.
 
   Returns:
-    the given pb, modified in place
+    the given pb, modified in place.
   """
   for desc, values in pb.ListFields():
     is_repeated = True
-    if desc.label is not descriptor.FieldDescriptor.LABEL_REPEATED:
+    if desc.label != descriptor.FieldDescriptor.LABEL_REPEATED:
       is_repeated = False
       values = [values]
 
@@ -162,7 +279,7 @@ def NormalizeNumberFields(pb):
         # This is a map, only recurse if the values have a message type.
         if (desc.message_type.fields_by_number[2].type ==
             descriptor.FieldDescriptor.TYPE_MESSAGE):
-          for v in six.itervalues(values):
+          for v in iter(values.values()):
             NormalizeNumberFields(v)
       else:
         for v in values:
@@ -173,11 +290,11 @@ def NormalizeNumberFields(pb):
 
 
 def _IsMap(value):
-  return isinstance(value, collections.Mapping)
+  return isinstance(value, collections_abc.Mapping)
 
 
 def _IsRepeatedContainer(value):
-  if isinstance(value, six.string_types):
+  if isinstance(value, str):
     return False
   try:
     iter(value)
@@ -193,14 +310,24 @@ def ProtoEq(a, b):
   repeated fields, ie duplicates and order matter.
 
   Args:
-    a, b: proto2 messages or primitives
+    a: A proto2 message or a primitive.
+    b: A proto2 message or a primitive.
 
   Returns:
     `True` if the messages are equal.
   """
   def Format(pb):
-    """Returns a dictionary that maps tag number (for messages) or element index
-    (for repeated fields) to value, or just pb unchanged if it's neither."""
+    """Returns a dictionary or unchanged pb bases on its type.
+
+    Specifically, this function returns a dictionary that maps tag
+    number (for messages) or element index (for repeated fields) to
+    value, or just pb unchanged if it's neither.
+
+    Args:
+      pb: A proto2 message or a primitive.
+    Returns:
+      A dict or unchanged pb.
+    """
     if isinstance(pb, message.Message):
       return dict((desc.number, value) for desc, value in pb.ListFields())
     elif _IsMap(pb):

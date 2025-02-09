@@ -16,19 +16,28 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_WORKER_ENV_H_
 #define TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_WORKER_ENV_H_
 
+#include <vector>
+
 #include "tensorflow/core/platform/types.h"
 
-namespace tensorflow {
-
+namespace tsl {
+class Env;
 namespace thread {
 class ThreadPool;
 }  // namespace thread
+}  // namespace tsl
+namespace tensorflow {
+using Env = tsl::Env;
 
+namespace thread {
+using tsl::thread::ThreadPool;
+}  // namespace thread
+
+class CollectiveExecutorMgrInterface;
+class Device;
 class DeviceMgr;
-class Env;
-class GraphMgr;
 class RendezvousMgrInterface;
-class WorkerCacheInterface;
+class SessionMgr;
 
 // The worker environment class, which holds a bag of pointers to
 // per-worker singletons.
@@ -37,21 +46,29 @@ class WorkerCacheInterface;
 struct WorkerEnv {
   Env* env = nullptr;
 
-  // The name of the worker. E.g., /job:mnist/replica:1/task:0.
-  string worker_name;
+  // session_mgr encapsulates state for each session.
+  SessionMgr* session_mgr = nullptr;
 
-  // Object from which WorkerInterface instances can be obtained.
-  WorkerCacheInterface* worker_cache = nullptr;
+  // In large scaled distributed training, many singleton components (e.g.
+  // Rendezvous) can becomes the bottleneck of the system. This field allows
+  // us to shard the single components. This number will scale up with number
+  // of tasks in this cluster. It is always greater than 1.
+  int experimental_num_shards = 1;
 
   // device_mgr manages local devices (cpu and gpu). The WorkerService
   // is the network interface for managed devices.
+  //
+  // Note: Please use the device_mgr associated with your session if appropriate
+  // instead of this one. Using this device_mgr does not support ClusterSpec
+  // propagated sessions.
   DeviceMgr* device_mgr = nullptr;
-
-  // graph_mgr keeps track of registered graphs of this worker.
-  GraphMgr* graph_mgr = nullptr;
 
   // A set of rendezvous keyed by step ids.
   RendezvousMgrInterface* rendezvous_mgr = nullptr;
+
+  // Generates per-step CollectiveExecutors and has access to utilities
+  // supporting collective operations.
+  std::unique_ptr<CollectiveExecutorMgrInterface> collective_executor_mgr;
 
   // A pool of threads for scheduling compute work.
   thread::ThreadPool* compute_pool = nullptr;

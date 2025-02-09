@@ -13,27 +13,41 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_GRAPH_TENSOR_ID_H_
-#define TENSORFLOW_GRAPH_TENSOR_ID_H_
+#ifndef TENSORFLOW_CORE_GRAPH_TENSOR_ID_H_
+#define TENSORFLOW_CORE_GRAPH_TENSOR_ID_H_
 
 #include <string>
 
+#include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/lib/hash/hash.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 
 namespace tensorflow {
 
+struct SafeTensorId;
+
 // Identifier for a tensor within a step.
 // first == operation_name, second == output_index
 // Note: does not own backing storage for name.
-struct TensorId : public std::pair<StringPiece, int> {
-  typedef std::pair<StringPiece, int> Base;
+struct TensorId : public std::pair<absl::string_view, int> {
+  typedef std::pair<absl::string_view, int> Base;
 
   // Inherit the set of constructors.
   using Base::pair;
 
-  string ToString() const { return strings::StrCat(first, ":", second); }
+  // NOTE(skyewm): this is required on some platforms. I'm not sure why the
+  // using statement above isn't always sufficient.
+  TensorId() : Base() {}
+  TensorId(const SafeTensorId& id);
+
+  const absl::string_view node() const { return first; }
+  int index() const { return second; }
+
+  string ToString() const {
+    if (second == Graph::kControlSlot) return strings::StrCat("^", first);
+    return strings::StrCat(first, ":", second);
+  }
 
   struct Hasher {
    public:
@@ -44,8 +58,37 @@ struct TensorId : public std::pair<StringPiece, int> {
 };
 
 TensorId ParseTensorName(const string& name);
-TensorId ParseTensorName(StringPiece name);
+TensorId ParseTensorName(absl::string_view name);
+
+bool IsTensorIdControl(const TensorId& tensor_id);
+
+// Same as TensorId, except owns the backing storage for the op name. This makes
+// the memory management simpler at the expense of a copy.
+struct SafeTensorId : public std::pair<string, int> {
+  typedef std::pair<string, int> Base;
+
+  // NOTE(skyewm): this is required on some platforms. I'm not sure why the
+  // using "using Base::pair;" isn't always sufficient.
+  SafeTensorId() : Base() {}
+  SafeTensorId(const string& str, int idx) : Base(str, idx) {}
+  SafeTensorId(const TensorId& id);
+
+  const string& node() const { return first; }
+  int index() const { return second; }
+
+  string ToString() const {
+    if (second == Graph::kControlSlot) return strings::StrCat("^", first);
+    return strings::StrCat(first, ":", second);
+  }
+
+  struct Hasher {
+   public:
+    std::size_t operator()(const TensorId& x) const {
+      return Hash32(x.first.data(), x.first.size(), x.second);
+    }
+  };
+};
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_GRAPH_TENSOR_ID_H_
+#endif  // TENSORFLOW_CORE_GRAPH_TENSOR_ID_H_

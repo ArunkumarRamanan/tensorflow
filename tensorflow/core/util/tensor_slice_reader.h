@@ -15,14 +15,16 @@ limitations under the License.
 
 // The utility to read checkpoints for google brain tensor ops and v3
 // checkpoints for dist_belief.
-//
 
-#ifndef TENSORFLOW_UTIL_TENSOR_SLICE_READER_H_
-#define TENSORFLOW_UTIL_TENSOR_SLICE_READER_H_
+#ifndef TENSORFLOW_CORE_UTIL_TENSOR_SLICE_READER_H_
+#define TENSORFLOW_CORE_UTIL_TENSOR_SLICE_READER_H_
 
+#include <functional>
+#include <memory>
 #include <unordered_map>
-
+#include <utility>
 #include <vector>
+
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_slice.h"
@@ -60,9 +62,9 @@ class TensorSliceReader {
     virtual ~Table();
     virtual bool Get(const string& key, string* value) = 0;
   };
-  typedef std::function<Status(const string&, Table**)> OpenTableFunction;
+  typedef std::function<absl::Status(const string&, Table**)> OpenTableFunction;
 
-  static const int kLoadAllShards = -1;
+  static constexpr int kLoadAllShards = -1;
   TensorSliceReader(const string& filepattern);
   TensorSliceReader(const string& filepattern, OpenTableFunction open_function);
   TensorSliceReader(const string& filepattern, OpenTableFunction open_function,
@@ -76,7 +78,7 @@ class TensorSliceReader {
   int num_files() const { return sss_.size(); }
 
   // Get the status of the reader.
-  const Status status() const { return status_; }
+  absl::Status status() const { return status_; }
 
   // Checks if the reader contains any slice of a tensor. In case the reader
   // does contain the tensor, if "shape" is not nullptr, fill "shape" with the
@@ -99,12 +101,17 @@ class TensorSliceReader {
 
   // Returns value for one tensor. Only single slice checkpoints are supported
   // at the moment.
-  Status GetTensor(const string& name,
-                   std::unique_ptr<tensorflow::Tensor>* out_tensor) const;
+  absl::Status GetTensor(const string& name,
+                         std::unique_ptr<tensorflow::Tensor>* out_tensor) const;
 
   typedef std::unordered_map<string, TensorShape> VarToShapeMap;
+  typedef std::unordered_map<string, DataType> VarToDataTypeMap;
+
   // Returns a map from tensor name to shape.
   VarToShapeMap GetVariableToShapeMap() const;
+
+  // Returns a map from tensor name to data type.
+  VarToDataTypeMap GetVariableToDataTypeMap() const;
 
   // Returns a string containing names and shapes of all the tensors.
   const string DebugString() const;
@@ -129,13 +136,14 @@ class TensorSliceReader {
   mutable bool all_shards_loaded_ = false;
   mutable std::vector<std::unique_ptr<Table>> sss_;
   mutable std::unordered_map<string, TensorSliceSet*> tensors_;
-  mutable Status status_;
+  mutable absl::Status status_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(TensorSliceReader);
+  TensorSliceReader(const TensorSliceReader&) = delete;
+  void operator=(const TensorSliceReader&) = delete;
 };
 
-Status OpenTableTensorSliceReader(const string& fname,
-                                  TensorSliceReader::Table** table);
+absl::Status OpenTableTensorSliceReader(const string& fname,
+                                        TensorSliceReader::Table** result);
 
 template <typename T>
 bool TensorSliceReader::CopySliceData(const string& name,
@@ -165,13 +173,34 @@ bool TensorSliceReader::CopySliceData(const string& name,
     CHECK_GE(idx, 0) << "Failed to find the index for filename " << fname;
     // We read a record in the corresponding sstable
     const string key = EncodeTensorNameSlice(name, slice_s);
-    CHECK(sss_[idx]->Get(key, &value))
-        << "Failed to seek to the record for tensor " << name << ", slice "
-        << slice_s.DebugString() << ": computed key = " << key;
+    if (!sss_[idx]->Get(key, &value)) {
+      VLOG(1) << "Failed to seek to the record for tensor " << name
+              << ", slice " << slice_s.DebugString()
+              << ": computed key = " << key;
+      return false;
+    }
     SavedTensorSlices sts;
-    CHECK(ParseProtoUnlimited(&sts, value))
-        << "Failed to parse the record for tensor " << name << ", slice "
-        << slice_s.DebugString() << ": computed key = " << key;
+    if (!ParseProtoUnlimited(&sts, value)) {
+      VLOG(1) << "Failed to parse the record for tensor " << name << ", slice "
+              << slice_s.DebugString() << ": computed key = " << key;
+      return false;
+    }
+    // Ensure the TensorSlice contains the expected amount of data.
+    TensorShape shp_s;
+    absl::Status s = slice_s.SliceTensorShape(tss->shape(), &shp_s);
+    if (!s.ok()) {
+      VLOG(1) << "Failed to slice tensor " << name << ", slice "
+              << slice_s.DebugString() << ": " << s;
+      return false;
+    }
+    if (checkpoint::TensorProtoDataSize<T>(sts.data().data()) !=
+        shp_s.num_elements()) {
+      VLOG(1) << "Tensor " << name << ", slice " << slice_s.DebugString()
+              << " had an unexpected amount of data: expected = "
+              << shp_s.num_elements() << ", got = "
+              << checkpoint::TensorProtoDataSize<T>(sts.data().data());
+      return false;
+    }
     CopyDataFromTensorSliceToTensorSlice(
         tss->shape(), slice_s, slice,
         checkpoint::TensorProtoData<T>(sts.data().data()), data);
@@ -183,4 +212,4 @@ bool TensorSliceReader::CopySliceData(const string& name,
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_UTIL_TENSOR_SLICE_READER_H_
+#endif  // TENSORFLOW_CORE_UTIL_TENSOR_SLICE_READER_H_

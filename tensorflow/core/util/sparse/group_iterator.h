@@ -13,11 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_UTIL_SPARSE_GROUP_ITERATOR_H_
-#define TENSORFLOW_UTIL_SPARSE_GROUP_ITERATOR_H_
+#ifndef TENSORFLOW_CORE_UTIL_SPARSE_GROUP_ITERATOR_H_
+#define TENSORFLOW_CORE_UTIL_SPARSE_GROUP_ITERATOR_H_
 
 #include <vector>
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
@@ -33,18 +33,19 @@ class GroupIterable;  // Predeclare GroupIterable for Group.
 // provide access into the underlying SparseTensor.
 class Group {
  public:
-  Group(GroupIterable* iter, int64 loc, int64 next_loc)
+  Group(GroupIterable* iter, int64_t loc, int64_t next_loc)
       : iter_(iter), loc_(loc), next_loc_(next_loc) {}
 
-  std::vector<int64> group() const;
-  TTypes<int64>::UnalignedConstMatrix indices() const;
+  std::vector<int64_t> group() const;
+  int64_t group_at(size_t index) const;
+  TTypes<int64_t>::UnalignedConstMatrix indices() const;
   template <typename T>
   typename TTypes<T>::UnalignedVec values() const;
 
  private:
   GroupIterable* iter_;
-  int64 loc_;
-  int64 next_loc_;
+  int64_t loc_;
+  int64_t next_loc_;
 };
 
 /////////////////
@@ -75,30 +76,38 @@ class Group {
 // Forward declaration of SparseTensor
 class GroupIterable {
  public:
-  typedef gtl::ArraySlice<int64> VarDimArray;
+  typedef absl::Span<const int64_t> VarDimArray;
 
   GroupIterable(Tensor ix, Tensor vals, int dims, const VarDimArray& group_dims)
-      : ix_(ix), vals_(vals), dims_(dims), group_dims_(group_dims) {}
+      : ix_(ix),
+        ix_matrix_(ix_.matrix<int64_t>()),
+        vals_(vals),
+        dims_(dims),
+        group_dims_(group_dims.begin(), group_dims.end()) {}
 
   class IteratorStep;
 
   IteratorStep begin() { return IteratorStep(this, 0); }
+  IteratorStep at(int64_t loc) {
+    CHECK(loc >= 0 && loc <= ix_.dim_size(0))
+        << "loc provided must lie between 0 and " << ix_.dim_size(0);
+    return IteratorStep(this, loc);
+  }
   IteratorStep end() { return IteratorStep(this, ix_.dim_size(0)); }
 
   template <typename TIX>
-  inline bool GroupMatches(const TIX& ix, int64 loc_a, int64 loc_b) const {
-    bool matches = true;
+  inline bool GroupMatches(const TIX& ix, int64_t loc_a, int64_t loc_b) const {
     for (int d : group_dims_) {
       if (ix(loc_a, d) != ix(loc_b, d)) {
-        matches = false;
+        return false;
       }
     }
-    return matches;
+    return true;
   }
 
   class IteratorStep {
    public:
-    IteratorStep(GroupIterable* iter, int64 loc)
+    IteratorStep(GroupIterable* iter, int64_t loc)
         : iter_(iter), loc_(loc), next_loc_(loc_) {
       UpdateEndOfGroup();
     }
@@ -109,20 +118,27 @@ class GroupIterable {
     IteratorStep& operator++();    // prefix ++
     IteratorStep operator++(int);  // postfix ++
     Group operator*() const { return Group(iter_, loc_, next_loc_); }
+    int64_t loc() const { return loc_; }
 
    private:
     GroupIterable* iter_;
-    int64 loc_;
-    int64 next_loc_;
+    int64_t loc_;
+    int64_t next_loc_;
   };
 
  private:
   friend class Group;
-  Tensor ix_;
+  const Tensor ix_;
+  const TTypes<int64_t>::ConstMatrix ix_matrix_;
   Tensor vals_;
   const int dims_;
-  const VarDimArray group_dims_;
+  const absl::InlinedVector<int64_t, 8UL> group_dims_;
 };
+
+inline int64_t Group::group_at(size_t index) const {
+  const auto& ix_t = iter_->ix_matrix_;
+  return ix_t(loc_, index);
+}
 
 // Implementation of Group::values<T>()
 template <typename T>
@@ -134,4 +150,4 @@ typename TTypes<T>::UnalignedVec Group::values() const {
 }  // namespace sparse
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_UTIL_SPARSE_GROUP_ITERATOR_H_
+#endif  // TENSORFLOW_CORE_UTIL_SPARSE_GROUP_ITERATOR_H_

@@ -14,6 +14,10 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/kernels/ops_util.h"
+
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "tensorflow/core/framework/kernel_shape_util.h"
+#include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -66,31 +70,31 @@ class OpsUtilTest : public ::testing::Test {
 
   static void VerifyGet2dOutputSizeBoundaries(padding_struct pad_struct,
                                               error::Code code) {
-    int64 new_height, new_width, pad_rows, pad_cols;
-    Status status = GetWindowedOutputSize(
+    int64_t new_height, new_width, pad_rows, pad_cols;
+    absl::Status status = GetWindowedOutputSize(
         pad_struct.input.in_height, pad_struct.input.filter_height,
-        pad_struct.input.row_stride, pad_struct.input.padding, &new_height,
-        &pad_rows);
+        /*dilation_rate=*/1, pad_struct.input.row_stride,
+        pad_struct.input.padding, &new_height, &pad_rows);
     EXPECT_EQ(status.code(), code) << status;
     status = GetWindowedOutputSize(
         pad_struct.input.in_width, pad_struct.input.filter_width,
-        pad_struct.input.col_stride, pad_struct.input.padding, &new_width,
-        &pad_cols);
+        /*dilation_rate=*/1, pad_struct.input.col_stride,
+        pad_struct.input.padding, &new_width, &pad_cols);
     EXPECT_EQ(status.code(), code) << status;
   }
 
   static void VerifyGet2dOutputSizeValues(padding_struct pad_struct,
                                           error::Code code) {
-    int64 new_height, new_width, pad_rows, pad_cols;
-    Status status = GetWindowedOutputSize(
+    int64_t new_height, new_width, pad_rows, pad_cols;
+    absl::Status status = GetWindowedOutputSize(
         pad_struct.input.in_height, pad_struct.input.filter_height,
-        pad_struct.input.row_stride, pad_struct.input.padding, &new_height,
-        &pad_rows);
+        /*dilation_rate=*/1, pad_struct.input.row_stride,
+        pad_struct.input.padding, &new_height, &pad_rows);
     EXPECT_EQ(status.code(), code) << status;
     status = GetWindowedOutputSize(
         pad_struct.input.in_width, pad_struct.input.filter_width,
-        pad_struct.input.col_stride, pad_struct.input.padding, &new_width,
-        &pad_cols);
+        /*dilation_rate=*/1, pad_struct.input.col_stride,
+        pad_struct.input.padding, &new_width, &pad_cols);
     EXPECT_EQ(status.code(), code) << status;
     EXPECT_EQ(pad_struct.output.new_height, new_height);
     EXPECT_EQ(pad_struct.output.new_width, new_width);
@@ -100,16 +104,16 @@ class OpsUtilTest : public ::testing::Test {
 
   static void VerifyGet2dOutputVerboseSizeValues(padding_struct pad_struct,
                                                  error::Code code) {
-    int64 new_height, new_width, pad_top, pad_bottom, pad_left, pad_right;
-    Status status = GetWindowedOutputSizeVerbose(
+    int64_t new_height, new_width, pad_top, pad_bottom, pad_left, pad_right;
+    absl::Status status = GetWindowedOutputSizeVerbose(
         pad_struct.input.in_height, pad_struct.input.filter_height,
-        pad_struct.input.row_stride, pad_struct.input.padding, &new_height,
-        &pad_top, &pad_bottom);
+        /*dilation_rate=*/1, pad_struct.input.row_stride,
+        pad_struct.input.padding, &new_height, &pad_top, &pad_bottom);
     EXPECT_EQ(status.code(), code) << status;
     status = GetWindowedOutputSizeVerbose(
         pad_struct.input.in_width, pad_struct.input.filter_width,
-        pad_struct.input.col_stride, pad_struct.input.padding, &new_width,
-        &pad_left, &pad_right);
+        /*dilation_rate=*/1, pad_struct.input.col_stride,
+        pad_struct.input.padding, &new_width, &pad_left, &pad_right);
     EXPECT_EQ(status.code(), code) << status;
     EXPECT_EQ(pad_struct.output.new_height, new_height);
     EXPECT_EQ(pad_struct.output.new_width, new_width);
@@ -121,7 +125,7 @@ class OpsUtilTest : public ::testing::Test {
 
   static void VerifyBoundaries(bcast_struct bcast, error::Code code) {
     int new_index, new_size;
-    Status status = GetBroadcastSize(
+    absl::Status status = GetBroadcastSize(
         bcast.input.index, bcast.input.in_size, bcast.input.ksize,
         bcast.input.stride, bcast.input.pad_size, &new_index, &new_size);
     EXPECT_EQ(status.code(), code) << status;
@@ -129,7 +133,7 @@ class OpsUtilTest : public ::testing::Test {
 
   static void VerifyBcastValues(bcast_struct bcast) {
     int new_index, new_size;
-    EXPECT_EQ(Status::OK(),
+    EXPECT_EQ(absl::OkStatus(),
               GetBroadcastSize(bcast.input.index, bcast.input.in_size,
                                bcast.input.ksize, bcast.input.stride,
                                bcast.input.pad_size, &new_index, &new_size));
@@ -169,12 +173,6 @@ TEST_F(OpsUtilTest, Get2dOutputSizeVerbose) {
   padding_struct pad_struct2 = {{3, 3, 2, 2, 2, 2, VALID}, {1, 1, 0, 0, 0, 0}};
   VerifyGet2dOutputVerboseSizeValues(pad_struct1, error::OK);
   VerifyGet2dOutputVerboseSizeValues(pad_struct2, error::OK);
-}
-
-// Test stride > ksize fails with INVALID_ARGUMENT.
-TEST_F(OpsUtilTest, GetBroadcastTest3_1_2_0) {
-  bcast_struct bcast = {{0, 3, 1, 2, 0}, {0, 3}};
-  VerifyBoundaries(bcast, error::INVALID_ARGUMENT);
 }
 
 // Test index * stride > in_size fails with INVALID_ARGUMENT.
@@ -222,7 +220,8 @@ TEST_F(OpsUtilTest, GetBroadcastTest3_3_1_2) {
 // in_size = 3, ksize = 3, stride = 2, pad_size = 0
 TEST_F(OpsUtilTest, GetBroadcastTest3_3_2_0) {
   bcast_struct bcast[] = {
-      {{0, 3, 3, 2, 0}, {0, 3}}, {{1, 3, 3, 2, 0}, {2, 1}},
+      {{0, 3, 3, 2, 0}, {0, 3}},
+      {{1, 3, 3, 2, 0}, {2, 1}},
   };
   for (size_t i = 0; i < sizeof(bcast) / sizeof(bcast[0]); ++i) {
     VerifyBcastValues(bcast[i]);
@@ -232,7 +231,8 @@ TEST_F(OpsUtilTest, GetBroadcastTest3_3_2_0) {
 // in_size = 3, ksize = 3, stride = 2, pad_size = 1
 TEST_F(OpsUtilTest, GetBroadcastTest3_3_2_1) {
   bcast_struct bcast[] = {
-      {{0, 3, 3, 2, 1}, {0, 2}}, {{1, 3, 3, 2, 1}, {1, 2}},
+      {{0, 3, 3, 2, 1}, {0, 2}},
+      {{1, 3, 3, 2, 1}, {1, 2}},
   };
   for (size_t i = 0; i < sizeof(bcast) / sizeof(bcast[0]); ++i) {
     VerifyBcastValues(bcast[i]);
@@ -262,7 +262,8 @@ TEST_F(OpsUtilTest, GetBroadcastTest3_3_3_0) {
 // in_size = 3, ksize = 3, stride = 3, pad_size = 1
 TEST_F(OpsUtilTest, GetBroadcastTest3_3_3_1) {
   bcast_struct bcast[] = {
-      {{0, 3, 3, 3, 1}, {0, 2}}, {{1, 3, 3, 3, 1}, {2, 1}},
+      {{0, 3, 3, 3, 1}, {0, 2}},
+      {{1, 3, 3, 3, 1}, {2, 1}},
   };
   for (size_t i = 0; i < sizeof(bcast) / sizeof(bcast[0]); ++i) {
     VerifyBcastValues(bcast[i]);
@@ -279,8 +280,131 @@ TEST_F(OpsUtilTest, GetBroadcastTest3_3_3_2) {
   }
 }
 
+// in_size = 3, ksize = 1, stride = 2, pad_size = 0
+TEST_F(OpsUtilTest, GetBroadcastTest3_1_2_0) {
+  bcast_struct bcast[] = {
+      {{0, 3, 1, 2, 0}, {0, 1}},
+      {{1, 3, 1, 2, 0}, {2, 1}},
+  };
+  for (size_t i = 0; i < sizeof(bcast) / sizeof(bcast[0]); ++i) {
+    VerifyBcastValues(bcast[i]);
+  }
+}
+
+// in_size = 3, ksize = 2, stride = 3, pad_size = 0
+TEST_F(OpsUtilTest, GetBroadcastTest3_2_3_0) {
+  bcast_struct bcast[] = {
+      {{0, 3, 2, 3, 0}, {0, 2}},
+  };
+  for (size_t i = 0; i < sizeof(bcast) / sizeof(bcast[0]); ++i) {
+    VerifyBcastValues(bcast[i]);
+  }
+}
+
+// in_size = 3, ksize = 2, stride = 3, pad_size = 1
+TEST_F(OpsUtilTest, GetBroadcastTest3_2_3_1) {
+  bcast_struct bcast[] = {
+      {{0, 3, 2, 3, 1}, {0, 1}},
+      {{1, 3, 2, 3, 1}, {2, 1}},
+  };
+  for (size_t i = 0; i < sizeof(bcast) / sizeof(bcast[0]); ++i) {
+    VerifyBcastValues(bcast[i]);
+  }
+}
+
 TEST_F(OpsUtilTest, SanitizeThreadSuffix) {
   EXPECT_EQ("_aBc123_-___", SanitizeThreadSuffix("/aBc123_-  /"));
+}
+
+TEST_F(OpsUtilTest, Aligned1DSlice) {
+#if EIGEN_MAX_ALIGN_BYTES == 0
+  // When EIGEN_MAX_ALIGN_BYTES is 0, a 1D tensor is always aligned.
+  Tensor t(DT_FLOAT, TensorShape({3}));
+  int64 start = 0;
+  int64 end = 1;
+  bool output = IsDim0SliceAligned<float>(t.shape(), start, end);
+  EXPECT_EQ(output, true);
+#else
+  Tensor t(DT_FLOAT, TensorShape({EIGEN_MAX_ALIGN_BYTES * 2}));
+  int64_t start = 0;
+  int64_t end = EIGEN_MAX_ALIGN_BYTES;
+  bool output = IsDim0SliceAligned<float>(t.shape(), start, end);
+  EXPECT_EQ(output, true);
+  // Checks sliced 1D tensor is aligned for sanity.
+  Tensor sliced;
+  CHECK(sliced.CopyFrom(t.Slice(start, end), TensorShape({end - start})));
+  EXPECT_EQ(sliced.IsAligned(), true);
+#endif
+}
+
+#if EIGEN_MAX_ALIGN_BYTES > 0
+TEST_F(OpsUtilTest, Misaligned1DSlice) {
+  Tensor t(DT_FLOAT, TensorShape({EIGEN_MAX_ALIGN_BYTES * 2}));
+  int64_t start = 1;
+  int64_t end = EIGEN_MAX_ALIGN_BYTES + 1;
+  bool output = IsDim0SliceAligned<float>(t.shape(), start, end);
+  EXPECT_EQ(output, false);
+  // Checks sliced 1D tensor is misaligned for sanity.
+  Tensor sliced;
+  CHECK(sliced.CopyFrom(t.Slice(start, end), TensorShape({end - start})));
+  EXPECT_EQ(sliced.IsAligned(), false);
+}
+#endif
+
+TEST_F(OpsUtilTest, Aligned2DSliceOfDim0) {
+#if EIGEN_MAX_ALIGN_BYTES == 0
+  // When EIGEN_MAX_ALIGN_BYTES is 0 and the size of the first dimension is
+  // nonzero, a multidimensional tensor is always aligned.
+  Tensor t(DT_FLOAT, TensorShape({3, 4}));
+  int64 start = 1;
+  int64 end = 2;
+  bool output = IsDim0SliceAligned<float>(t.shape(), start, end);
+  EXPECT_EQ(output, true);
+#else
+  // For multidimensional tensors, alignment is dictated by inner_dim_size.
+  int64_t inner_dim_size = EIGEN_MAX_ALIGN_BYTES;
+  Tensor t(DT_FLOAT, TensorShape({3, inner_dim_size}));
+  int64_t start = 1;
+  int64_t end = 2;
+  bool output = IsDim0SliceAligned<float>(t.shape(), start, end);
+  EXPECT_EQ(output, true);
+  // Checks sliced 2D is aligned, for sanity.
+  Tensor sliced;
+  CHECK(sliced.CopyFrom(t.Slice(start, end), TensorShape({1, inner_dim_size})));
+  EXPECT_EQ(sliced.IsAligned(), true);
+#endif
+}
+
+#if EIGEN_MAX_ALIGN_BYTES > 0
+TEST_F(OpsUtilTest, Misaligned2DSliceOfDim0) {
+  // For multidimensional tensors, alignment is dictated by inner_dim_size.
+  int64_t inner_dim_size = EIGEN_MAX_ALIGN_BYTES + 1;
+  Tensor t(DT_FLOAT, TensorShape({3, inner_dim_size}));
+  int64_t start = 1;
+  int64_t end = 2;
+  bool output = IsDim0SliceAligned<float>(t.shape(), start, end);
+  EXPECT_EQ(output, false);
+  // Checks sliced 2D is misaligned, for sanity.
+  Tensor sliced;
+  CHECK(sliced.CopyFrom(t.Slice(start, end), TensorShape({1, inner_dim_size})));
+  EXPECT_EQ(sliced.IsAligned(), false);
+}
+#endif
+
+TEST_F(OpsUtilTest, MisalignedEmptyShape) {
+  TensorShape shape({});
+  int64_t start = 1;
+  int64_t end = 2;
+  bool output = IsDim0SliceAligned<float>(shape, start, end);
+  EXPECT_EQ(output, false);
+}
+
+TEST_F(OpsUtilTest, MisalignedEmptyDim0) {
+  TensorShape shape({0, 1, 2});
+  int64_t start = 0;
+  int64_t end = 1;
+  bool output = IsDim0SliceAligned<float>(shape, start, end);
+  EXPECT_EQ(output, false);
 }
 
 }  // namespace

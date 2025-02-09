@@ -15,30 +15,63 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/stats_publisher_interface.h"
 
-namespace tensorflow {
+#include <memory>
+#include <string>
+#include <vector>
 
+#include "tensorflow/core/framework/function.h"
+#include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/core/platform/refcount.h"
+
+namespace tensorflow {
 namespace {
+
 // NoOpStatsPublisher provides an dummy/no-op implementation of
 // StatsPublisherInterface.
 class NoOpStatsPublisher : public StatsPublisherInterface {
  public:
-  NoOpStatsPublisher(){};
+  NoOpStatsPublisher() = default;
 
-  void PublishStatsProto(const StepStats& step_stats) override { return; }
+  void PublishStatsProto(const StepStats& step_stats) override {}
 
   void PublishGraphProto(
-      const std::vector<const GraphDef*>& graph_defs) override {
-    return;
-  }
+      const std::vector<const GraphDef*>& graph_defs) override {}
+
+  void PublishGraphProto(std::vector<GraphDef> graph_defs) override {}
+
+  void PublishGraphProto(std::vector<core::RefCountPtr<FunctionRecord>>&&
+                             function_records) override {}
 
   std::unique_ptr<ProfileHandler> GetProfileHandler(
-      uint64 step, int64 execution_count, const RunOptions& ropts) override {
+      uint64 step, int64_t execution_count, const RunOptions& ropts) override {
     return nullptr;
   }
 
-  ~NoOpStatsPublisher() override {}
+  ~NoOpStatsPublisher() override = default;
 };
+
 }  // namespace
+
+void StatsPublisherInterface::RegisterStatsPublisher(
+    StatsPublisherFactory factory_fn) {
+  StatsPublisherFactory** factory_ptr = GetStatsPublisherFactoryPtr();
+  if (*factory_ptr == nullptr) {
+    *factory_ptr = new StatsPublisherFactory();
+  } else {
+    LOG(WARNING)
+        << "More than one StatsPublisherFactory functions are registered. Only "
+           "the last registered one will be effective.";
+  }
+  **factory_ptr = factory_fn;
+}
+
+StatsPublisherFactory StatsPublisherInterface::GetStatsPublisherFactory() {
+  const auto* factory_ptr = GetStatsPublisherFactoryPtr();
+  if (*factory_ptr == nullptr) {
+    return CreateNoOpStatsPublisher;
+  }
+  return **factory_ptr;
+}
 
 std::unique_ptr<StatsPublisherInterface> CreateNoOpStatsPublisher(
     const string& session, const BuildGraphOptions& bopts,

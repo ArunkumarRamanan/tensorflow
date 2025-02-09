@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/core/kernels/reduction_ops_common.h"
 
+#include "tensorflow/core/lib/strings/str_util.h"
+
 namespace tensorflow {
 
 TensorShape ReductionHelper::out_reshape() const {
@@ -42,10 +44,10 @@ TensorShape ReductionHelper::shuffled_shape() {
   return shape;
 }
 
-gtl::InlinedVector<int32, 8> ReductionHelper::permutation() {
+absl::InlinedVector<int32, 8> ReductionHelper::permutation() {
   const int dims = data_reshape_.size();
   const int unreduced_dims = (dims + !reduce_first_axis_) / 2;
-  gtl::InlinedVector<int32, 8> perm(dims);
+  absl::InlinedVector<int32, 8> perm(dims);
   for (int i = 0; i < unreduced_dims; i++) {
     perm[i] = 2 * i + reduce_first_axis_;
   }
@@ -55,22 +57,37 @@ gtl::InlinedVector<int32, 8> ReductionHelper::permutation() {
   return perm;
 }
 
-Status ReductionHelper::Simplify(const Tensor& data, const Tensor& axis,
-                                 const bool keep_dims) {
-  // bitmap[i] indicates whether to reduce data along i-th axis.
-  gtl::InlinedVector<bool, 4> bitmap(data.dims(), false);
-  auto axis_vec = axis.flat<int32>();
-  for (int64 i = 0; i < axis.NumElements(); ++i) {
-    int32 index = axis_vec(i);
+template <typename Tperm>
+absl::Status SimplifyHelper(const Tensor& data, const Tensor& axis,
+                            absl::InlinedVector<bool, 4>& bitmap) {
+  auto axis_vec = axis.flat<Tperm>();
+  for (int64_t i = 0; i < axis.NumElements(); ++i) {
+    Tperm index = axis_vec(i);
     if (index < -data.dims() || index >= data.dims()) {
       return errors::InvalidArgument("Invalid reduction dimension (", index,
                                      " for input with ", data.dims(),
                                      " dimension(s)");
     }
     index = (index + data.dims()) % data.dims();
+    if (bitmap[index]) {
+      return errors::InvalidArgument(
+          "Invalid reduction arguments: Axes contains duplicate dimension: ",
+          index);
+    }
     bitmap[index] = true;
   }
+  return absl::OkStatus();
+}
 
+absl::Status ReductionHelper::Simplify(const Tensor& data, const Tensor& axis,
+                                       const bool keep_dims) {
+  // bitmap[i] indicates whether to reduce data along i-th axis.
+  absl::InlinedVector<bool, 4> bitmap(data.dims(), false);
+  if (axis.dtype() == DT_INT32) {
+    TF_RETURN_IF_ERROR(SimplifyHelper<int32>(data, axis, bitmap));
+  } else {
+    TF_RETURN_IF_ERROR(SimplifyHelper<int64_t>(data, axis, bitmap));
+  }
   // Output tensor's dim sizes.
   out_shape_.clear();
   for (int i = 0; i < data.dims(); ++i) {
@@ -134,10 +151,10 @@ Status ReductionHelper::Simplify(const Tensor& data, const Tensor& axis,
     }
   }
 
-  VLOG(1) << "data reshape: " << str_util::Join(data_reshape_, ",");
-  VLOG(1) << "out  reshape: " << str_util::Join(out_reshape_, ",");
-  VLOG(1) << "out    shape: " << str_util::Join(out_shape_, ",");
-  return Status::OK();
+  VLOG(1) << "data reshape: " << absl::StrJoin(data_reshape_, ",");
+  VLOG(1) << "out  reshape: " << absl::StrJoin(out_reshape_, ",");
+  VLOG(1) << "out    shape: " << absl::StrJoin(out_shape_, ",");
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

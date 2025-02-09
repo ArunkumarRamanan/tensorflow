@@ -13,14 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_SESSION_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_SESSION_H_
+#ifndef TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_SESSION_H_
+#define TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_SESSION_H_
 
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "tensorflow/core/distributed_runtime/call_options.h"
+#include "tensorflow/core/distributed_runtime/message_wrappers.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_channel.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -50,76 +51,106 @@ class GrpcSession : public Session {
   explicit GrpcSession(const SessionOptions& options);
 
  public:
-  static Status Create(const SessionOptions& options,
-                       std::unique_ptr<GrpcSession>* out_session);
+  static absl::Status Create(const SessionOptions& options,
+                             std::unique_ptr<GrpcSession>* out_session);
   // Resets the resource containers.
-  static Status Reset(const SessionOptions& options,
-                      const std::vector<string>& containers);
+  static absl::Status Reset(const SessionOptions& options,
+                            const std::vector<string>& containers);
 
   ~GrpcSession() override;
 
   // Creates a session with the "target". The session carries out
   // the graph computation defined by "graph", and will have version
   // number "initial_version".
-  Status Create(const GraphDef& graph) override;
-  Status Create(const RunOptions& run_options, const GraphDef& graph) override;
+  absl::Status Create(const GraphDef& graph) override;
+  absl::Status Create(const RunOptions& run_options,
+                      const GraphDef& graph) override;
+  absl::Status Create(GraphDef&& graph) override;
+  absl::Status Create(const RunOptions& run_options, GraphDef&& graph) override;
 
   // Runs with and without RunOptions.
-  Status Run(const std::vector<std::pair<string, Tensor> >& inputs,
-             const std::vector<string>& output_tensor_names,
-             const std::vector<string>& target_node_names,
-             std::vector<Tensor>* outputs) override;
-  Status Run(const RunOptions& run_options,
-             const std::vector<std::pair<string, Tensor> >& inputs,
-             const std::vector<string>& output_tensor_names,
-             const std::vector<string>& target_node_names,
-             std::vector<Tensor>* outputs, RunMetadata* run_metadata) override;
+  absl::Status Run(const std::vector<std::pair<string, Tensor> >& inputs,
+                   const std::vector<string>& output_tensor_names,
+                   const std::vector<string>& target_node_names,
+                   std::vector<Tensor>* outputs) override;
+  absl::Status Run(const RunOptions& run_options,
+                   const std::vector<std::pair<string, Tensor> >& inputs,
+                   const std::vector<string>& output_tensor_names,
+                   const std::vector<string>& target_node_names,
+                   std::vector<Tensor>* outputs,
+                   RunMetadata* run_metadata) override;
 
-  Status Extend(const GraphDef& graph) override;
-  Status Extend(const RunOptions& run_options, const GraphDef& graph) override;
+  absl::Status Extend(const GraphDef& graph) override;
+  absl::Status Extend(const RunOptions& run_options,
+                      const GraphDef& graph) override;
+  absl::Status Extend(GraphDef&& graph) override;
+  absl::Status Extend(const RunOptions& run_options, GraphDef&& graph) override;
 
-  Status Close() override;
-
-  // NOTE: This API is still experimental and may change.
-  ::tensorflow::Status PRunSetup(const std::vector<string>& input_names,
-                                 const std::vector<string>& output_names,
-                                 const std::vector<string>& target_nodes,
-                                 string* handle) override;
+  absl::Status Close() override;
 
   // NOTE: This API is still experimental and may change.
-  ::tensorflow::Status PRun(
-      const string& handle,
-      const std::vector<std::pair<string, Tensor> >& inputs,
-      const std::vector<string>& output_names,
-      std::vector<Tensor>* outputs) override;
+  absl::Status PRunSetup(const std::vector<string>& input_names,
+                         const std::vector<string>& output_names,
+                         const std::vector<string>& target_nodes,
+                         string* handle) override;
 
-  std::vector<DeviceAttributes> ListDevices();
+  // NOTE: This API is still experimental and may change.
+  absl::Status PRun(const string& handle,
+                    const std::vector<std::pair<string, Tensor> >& inputs,
+                    const std::vector<string>& output_names,
+                    std::vector<Tensor>* outputs) override;
+
+  absl::Status ListDevices(std::vector<DeviceAttributes>* response) override;
+
+  absl::Status MakeCallable(const CallableOptions& callable_options,
+                            CallableHandle* out_handle) override;
+  absl::Status RunCallable(CallableHandle handle,
+                           const std::vector<Tensor>& feed_tensors,
+                           std::vector<Tensor>* fetch_tensors,
+                           RunMetadata* run_metadata) override;
+  absl::Status ReleaseCallable(CallableHandle handle) override;
 
  protected:
   // Takes ownership of `*master`.
-  void SetRemoteMaster(MasterInterface* master);
+  void SetRemoteMaster(std::unique_ptr<MasterInterface> master);
+  // Allows subclasses to customize Session creation.
+  void SetHandleAndGraphVersion(string handle, int64_t graph_version)
+      TF_LOCKS_EXCLUDED(mu_);
 
  private:
-  SessionOptions options_;
+  const SessionOptions options_;
   std::unique_ptr<MasterInterface> master_;
   mutex mu_;
 
   // handle_ returned by the master to identify this session.
-  string handle_ GUARDED_BY(mu_);
+  string handle_ TF_GUARDED_BY(mu_);
 
   // The current version of the graph.
-  int64 current_graph_version_ GUARDED_BY(mu_);
+  int64_t current_graph_version_ TF_GUARDED_BY(mu_);
 
-  Status RunProto(CallOptions* call_options, RunStepRequest* req,
-                  RunStepResponse* resp);
+  bool is_local_ = false;
+
+  absl::Status Handle(string* out_handle) TF_LOCKS_EXCLUDED(mu_);
+
+  absl::Status RunHelper(const RunOptions& run_options,
+                         const std::vector<std::pair<string, Tensor> >& inputs,
+                         const std::vector<string>& output_tensor_names,
+                         const std::vector<string>& target_node_names,
+                         std::vector<Tensor>* outputs,
+                         RunMetadata* run_metadata, const string& prun_handle);
+
+  absl::Status RunProto(CallOptions* call_options,
+                        MutableRunStepRequestWrapper* req,
+                        MutableRunStepResponseWrapper* resp);
 
   // Implementations for all the public interfaces.
-  Status CreateImpl(CallOptions* call_options, const GraphDef& graph);
-  Status ExtendImpl(CallOptions* call_options, const GraphDef& graph);
+  absl::Status CreateImpl(CallOptions* call_options, GraphDef graph);
+  absl::Status ExtendImpl(CallOptions* call_options, GraphDef graph);
 
-  TF_DISALLOW_COPY_AND_ASSIGN(GrpcSession);
+  GrpcSession(const GrpcSession&) = delete;
+  void operator=(const GrpcSession&) = delete;
 };
 
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_SESSION_H_
+#endif  // TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_SESSION_H_

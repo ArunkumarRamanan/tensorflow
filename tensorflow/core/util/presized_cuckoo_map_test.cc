@@ -14,7 +14,10 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/util/presized_cuckoo_map.h"
+
 #include <array>
+#include <vector>
+
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/fingerprint.h"
 #include "tensorflow/core/platform/test.h"
@@ -22,25 +25,6 @@ limitations under the License.
 
 namespace tensorflow {
 namespace {
-
-TEST(PresizedCuckooMapTest, MultiplyHigh) {
-  struct Testcase {
-    uint64 x;
-    uint64 y;
-    uint64 result;
-  };
-  std::array<Testcase, 7> testcases{
-      {{0, 0, 0},
-       {0xffffffff, 0xffffffff, 0},
-       {0x2, 0xf000000000000000, 1},
-       {0x3, 0xf000000000000000, 2},
-       {0x3, 0xf000000000000001, 2},
-       {0x3, 0xffffffffffffffff, 2},
-       {0xffffffffffffffff, 0xffffffffffffffff, 0xfffffffffffffffe}}};
-  for (auto &tc : testcases) {
-    EXPECT_EQ(tc.result, presized_cuckoo_map::multiply_high_u64(tc.x, tc.y));
-  }
-}
 
 TEST(PresizedCuckooMapTest, Basic) {
   PresizedCuckooMap<int> pscm(1000);
@@ -50,12 +34,20 @@ TEST(PresizedCuckooMapTest, Basic) {
   EXPECT_EQ(out, 2);
 }
 
+TEST(PresizedCuckooMapTest, Prefetch) {
+  PresizedCuckooMap<int64_t> pscm(2);
+  EXPECT_TRUE(pscm.InsertUnique(1, 2));
+  // Works for both present and absent keys.
+  pscm.PrefetchKey(1);
+  pscm.PrefetchKey(2);
+}
+
 TEST(PresizedCuckooMapTest, TooManyItems) {
   static constexpr int kTableSize = 1000;
   PresizedCuckooMap<int> pscm(kTableSize);
   for (uint64 i = 0; i < kTableSize; i++) {
     uint64 key =
-        Fingerprint64(string(reinterpret_cast<char *>(&i), sizeof(int64)));
+        Fingerprint64(string(reinterpret_cast<char *>(&i), sizeof(int64_t)));
     ASSERT_TRUE(pscm.InsertUnique(key, i));
   }
   // Try to over-fill the table.  A few of these
@@ -63,7 +55,7 @@ TEST(PresizedCuckooMapTest, TooManyItems) {
   uint64 failed_at = 0;
   for (uint64 i = kTableSize; i < (2 * kTableSize); i++) {
     uint64 key =
-        Fingerprint64(string(reinterpret_cast<char *>(&i), sizeof(int64)));
+        Fingerprint64(string(reinterpret_cast<char *>(&i), sizeof(int64_t)));
     if (!pscm.InsertUnique(key, i)) {
       failed_at = i;
       break;
@@ -77,7 +69,7 @@ TEST(PresizedCuckooMapTest, TooManyItems) {
   for (uint64 i = 0; i < failed_at; i++) {
     int out;
     uint64 key =
-        Fingerprint64(string(reinterpret_cast<char *>(&i), sizeof(int64)));
+        Fingerprint64(string(reinterpret_cast<char *>(&i), sizeof(int64_t)));
     EXPECT_TRUE(pscm.Find(key, &out));
     EXPECT_EQ(out, i);
   }
@@ -107,16 +99,16 @@ TEST(PresizedCuckooMapTest, RepeatedClear) {
   }
 }
 
-void RunFill(int64 table_size) {
+void RunFill(int64_t table_size) {
   PresizedCuckooMap<int> pscm(table_size);
-  for (int64 i = 0; i < table_size; i++) {
+  for (int64_t i = 0; i < table_size; i++) {
     uint64 key =
-        Fingerprint64(string(reinterpret_cast<char *>(&i), sizeof(int64)));
+        Fingerprint64(string(reinterpret_cast<char *>(&i), sizeof(int64_t)));
     EXPECT_TRUE(pscm.InsertUnique(key, i));
   }
-  for (int64 i = 0; i < table_size; i++) {
+  for (int64_t i = 0; i < table_size; i++) {
     uint64 key =
-        Fingerprint64(string(reinterpret_cast<char *>(&i), sizeof(int64)));
+        Fingerprint64(string(reinterpret_cast<char *>(&i), sizeof(int64_t)));
     int out;
     EXPECT_TRUE(pscm.Find(key, &out));
     EXPECT_EQ(out, i);
@@ -124,7 +116,7 @@ void RunFill(int64 table_size) {
 }
 
 TEST(PresizedCuckooMapTest, Fill) {
-  for (int64 table_size = 10; table_size <= 5000000; table_size *= 71) {
+  for (int64_t table_size = 10; table_size <= 5000000; table_size *= 71) {
     RunFill(table_size);
   }
 }
@@ -155,13 +147,13 @@ static void CalculateKeys(uint64 num, std::vector<uint64> *dst) {
   }
 }
 
-static void BM_CuckooFill(int iters, int arg) {
+void BM_CuckooFill(::testing::benchmark::State &state) {
+  const int arg = state.range(0);
+
   uint64 table_size = arg;
-  testing::StopTiming();
   std::vector<uint64> calculated_keys;
   CalculateKeys(table_size, &calculated_keys);
-  testing::StartTiming();
-  for (int iter = 0; iter < iters; iter++) {
+  for (auto s : state) {
     PresizedCuckooMap<int> pscm(table_size);
     for (uint64 i = 0; i < table_size; i++) {
       pscm.InsertUnique(calculated_keys[i], i);
@@ -171,25 +163,27 @@ static void BM_CuckooFill(int iters, int arg) {
 
 BENCHMARK(BM_CuckooFill)->Arg(1000)->Arg(10000000);
 
-static void BM_CuckooRead(int iters, int arg) {
+void BM_CuckooRead(::testing::benchmark::State &state) {
+  const int arg = state.range(0);
+
   uint64 table_size = arg;
-  testing::StopTiming();
   std::vector<uint64> calculated_keys;
   CalculateKeys(table_size, &calculated_keys);
   PresizedCuckooMap<int> pscm(table_size);
   for (uint64 i = 0; i < table_size; i++) {
     pscm.InsertUnique(calculated_keys[i], i);
   }
-  testing::StartTiming();
-  uint64_t defeat_optimization = 0;
-  for (int i = 0; i < iters; i++) {
-    uint64 key_index = i % table_size;  // May slow down bench!
+
+  int i = 0;
+  for (auto s : state) {
+    // Avoid using '%', which is expensive.
+    uint64 key_index = i;
+    ++i;
+    if (i == table_size) i = 0;
+
     int out = 0;
     pscm.Find(calculated_keys[key_index], &out);
-    defeat_optimization += out;
-  }
-  if (defeat_optimization == 0) {
-    printf("Preventing the compiler from eliding the inner loop\n");
+    tensorflow::testing::DoNotOptimize(out);
   }
 }
 

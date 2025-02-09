@@ -13,22 +13,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#if !GOOGLE_CUDA
-#error This file must only be included when building with Cuda support
+#if !GOOGLE_CUDA && !TENSORFLOW_USE_ROCM
+#error This file must only be included when building with Cuda or ROCm support
 #endif
 
-#ifndef TENSORFLOW_KERNELS_CWISE_OPS_GPU_COMMON_CU_H_
-#define TENSORFLOW_KERNELS_CWISE_OPS_GPU_COMMON_CU_H_
+#ifndef TENSORFLOW_CORE_KERNELS_CWISE_OPS_GPU_COMMON_CU_H_
+#define TENSORFLOW_CORE_KERNELS_CWISE_OPS_GPU_COMMON_CU_H_
 
-#define EIGEN_USE_GPU
-
+#define _USE_MATH_DEFINES
+#include <cmath>
 #include <complex>
 
+#define EIGEN_USE_GPU
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/kernels/cwise_ops.h"
-#include "tensorflow/core/platform/types.h"
-
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/types.h"
 namespace tensorflow {
 namespace functor {
 
@@ -41,7 +41,11 @@ template <typename Functor>
 struct UnaryFunctor<GPUDevice, Functor> {
   void operator()(const GPUDevice& d, typename Functor::tout_type out,
                   typename Functor::tin_type in) {
-    To32Bit(out).device(d) = To32Bit(in).unaryExpr(typename Functor::func());
+    MaybeWith32BitIndexing<GPUDevice>(
+        [&](auto out32, auto in32) {
+          out32.device(d) = in32.unaryExpr(typename Functor::func());
+        },
+        out, in);
   }
 };
 
@@ -51,8 +55,11 @@ struct BinaryFunctor<GPUDevice, Functor, NDIMS, has_errors> {
   void operator()(const GPUDevice& d, typename Functor::tout_type out,
                   typename Functor::tin_type in0,
                   typename Functor::tin_type in1, bool* error) {
-    To32Bit(out).device(d) =
-        To32Bit(in0).binaryExpr(in1, typename Functor::func());
+    MaybeWith32BitIndexing<GPUDevice>(
+        [&](auto out32, auto in0_32, auto in1_32) {
+          out32.device(d) = in0_32.binaryExpr(in1_32, typename Functor::func());
+        },
+        out, in0, in1);
   }
 
   void Left(const GPUDevice& d, typename Functor::tout_type out,
@@ -62,7 +69,11 @@ struct BinaryFunctor<GPUDevice, Functor, NDIMS, has_errors> {
     typedef typename Functor::in_type Tin;
     typedef typename Functor::func Binary;
     typedef typename Eigen::internal::scalar_left<Tout, Tin, Binary> Unary;
-    To32Bit(out).device(d) = To32Bit(in).unaryExpr(Unary(scalar.data()));
+    MaybeWith32BitIndexing<GPUDevice>(
+        [&](auto out32, auto in32) {
+          out32.device(d) = in32.unaryExpr(Unary(scalar.data()));
+        },
+        out, in);
   }
 
   void Right(const GPUDevice& d, typename Functor::tout_type out,
@@ -72,7 +83,11 @@ struct BinaryFunctor<GPUDevice, Functor, NDIMS, has_errors> {
     typedef typename Functor::in_type Tin;
     typedef typename Functor::func Binary;
     typedef typename Eigen::internal::scalar_right<Tout, Tin, Binary> Unary;
-    To32Bit(out).device(d) = To32Bit(in).unaryExpr(Unary(scalar.data()));
+    MaybeWith32BitIndexing<GPUDevice>(
+        [&](auto out32, auto in32) {
+          out32.device(d) = in32.unaryExpr(Unary(scalar.data()));
+        },
+        out, in);
   }
 
   void BCast(const GPUDevice& d,
@@ -89,18 +104,41 @@ struct BinaryFunctor<GPUDevice, Functor, NDIMS, has_errors> {
       const bool bcast0_all_one = AllOne<NDIMS>(bcast0);
       const bool bcast1_all_one = AllOne<NDIMS>(bcast1);
       if (bcast0_all_one && !bcast1_all_one) {
-        To32Bit(out).device(d) =
-            To32Bit(in0).binaryExpr(To32Bit(in1).broadcast(bcast1), func);
+        MaybeWith32BitIndexing<GPUDevice>(
+            [&](auto out32, auto in0_32, auto in1_32) {
+              out32.device(d) =
+                  in0_32.binaryExpr(in1_32.broadcast(bcast1), func);
+            },
+            out, in0, in1);
         return;
       }
       if (!bcast0_all_one && bcast1_all_one) {
-        To32Bit(out).device(d) =
-            To32Bit(in0).broadcast(bcast0).binaryExpr(To32Bit(in1), func);
+        MaybeWith32BitIndexing<GPUDevice>(
+            [&](auto out32, auto in0_32, auto in1_32) {
+              out32.device(d) =
+                  in0_32.broadcast(bcast0).binaryExpr(in1_32, func);
+            },
+            out, in0, in1);
         return;
       }
     }
-    To32Bit(out).device(d) = To32Bit(in0).broadcast(bcast0).binaryExpr(
-        To32Bit(in1).broadcast(bcast1), func);
+    MaybeWith32BitIndexing<GPUDevice>(
+        [&](auto out32, auto in0_32, auto in1_32) {
+          out32.device(d) = in0_32.broadcast(bcast0).binaryExpr(
+              in1_32.broadcast(bcast1), func);
+        },
+        out, in0, in1);
+  }
+};
+
+// Partial specialization of ApproximateEqual<Device=GPUDevice, T>.
+template <typename T>
+struct ApproximateEqual<GPUDevice, T> {
+  void operator()(const GPUDevice& d, typename TTypes<T>::ConstFlat x,
+                  typename TTypes<T>::ConstFlat y, T tolerance,
+                  typename TTypes<bool>::Flat z) {
+    auto diff = x - y;
+    z.device(d) = diff.abs() <= tolerance;
   }
 };
 
@@ -122,6 +160,12 @@ struct BinaryFunctor<GPUDevice, Functor, NDIMS, has_errors> {
 #define DEFINE_UNARY6(F, T0, T1, T2, T3, T4, T5) \
   DEFINE_UNARY2(F, T0, T1);                      \
   DEFINE_UNARY4(F, T2, T3, T4, T5)
+#define DEFINE_UNARY7(F, T0, T1, T2, T3, T4, T5, T6) \
+  DEFINE_UNARY2(F, T0, T1);                          \
+  DEFINE_UNARY5(F, T2, T3, T4, T5, T6)
+#define DEFINE_UNARY8(F, T0, T1, T2, T3, T4, T5, T6, T7) \
+  DEFINE_UNARY4(F, T0, T1, T2, T3);                      \
+  DEFINE_UNARY4(F, T4, T5, T6, T7)
 
 // Macros to explicitly instantiate kernels on GPU for multiple types
 // (T0, T1, etc.) for BinaryFunctor.
@@ -162,7 +206,13 @@ struct BinaryFunctor<GPUDevice, Functor, NDIMS, has_errors> {
   DEFINE_BINARY5(F, T0, T1, T2, T3, T4);                                \
   DEFINE_BINARY6(F, T5, T6, T7, T8, T9, T10)
 
+#define DEFINE_APPROXIMATE_EQUAL1(T) \
+  template struct ApproximateEqual<GPUDevice, T>;
+#define DEFINE_APPROXIMATE_EQUAL2(T0, T1) \
+  DEFINE_APPROXIMATE_EQUAL1(T0);          \
+  DEFINE_APPROXIMATE_EQUAL1(T1);
+
 }  // end namespace functor
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_CWISE_OPS_GPU_COMMON_CU_H_
+#endif  // TENSORFLOW_CORE_KERNELS_CWISE_OPS_GPU_COMMON_CU_H_

@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_CONTROL_FLOW_OPS_H_
-#define TENSORFLOW_KERNELS_CONTROL_FLOW_OPS_H_
+#ifndef TENSORFLOW_CORE_KERNELS_CONTROL_FLOW_OPS_H_
+#define TENSORFLOW_CORE_KERNELS_CONTROL_FLOW_OPS_H_
 
 #include "tensorflow/core/framework/op_kernel.h"
 
@@ -43,7 +43,24 @@ class SwitchOp : public OpKernel {
   bool IsExpensive() override { return false; }
   ~SwitchOp() override {}
 
-  TF_DISALLOW_COPY_AND_ASSIGN(SwitchOp);
+  SwitchOp(const SwitchOp&) = delete;
+  void operator=(const SwitchOp&) = delete;
+};
+
+// An n-way switch op has two inputs and N outputs. It forwards the value of
+// Input:0 to the output specified by Input:1. Input:1 is an integer tensor.
+// Input:0 is forwarded to output:0 if Input:1 is 0, to output:1 if 1, and so
+// forth. If Input:1 is <0 or >=num_outputs(), Input:0 is forwarded to
+// output:num_outputs()-1.
+class SwitchNOp : public OpKernel {
+ public:
+  explicit SwitchNOp(OpKernelConstruction* context) : OpKernel(context) {}
+  void Compute(OpKernelContext* context) override;
+  bool IsExpensive() override { return false; }
+  ~SwitchNOp() override {}
+
+  SwitchNOp(const SwitchNOp&) = delete;
+  void operator=(const SwitchNOp&) = delete;
 };
 
 // A merge op has n inputs and two outputs. It forwards the value of the
@@ -56,7 +73,8 @@ class MergeOp : public OpKernel {
   bool IsExpensive() override { return false; }
   ~MergeOp() override {}
 
-  TF_DISALLOW_COPY_AND_ASSIGN(MergeOp);
+  MergeOp(const MergeOp&) = delete;
+  void operator=(const MergeOp&) = delete;
 };
 
 // An enter op has one input and one output. It creates or finds
@@ -69,7 +87,8 @@ class EnterOp : public OpKernel {
   bool IsExpensive() override { return false; }
   ~EnterOp() override {}
 
-  TF_DISALLOW_COPY_AND_ASSIGN(EnterOp);
+  EnterOp(const EnterOp&) = delete;
+  void operator=(const EnterOp&) = delete;
 };
 
 // An exit op has one input and one output. It exits the current
@@ -82,7 +101,8 @@ class ExitOp : public OpKernel {
   bool IsExpensive() override { return false; }
   ~ExitOp() override {}
 
-  TF_DISALLOW_COPY_AND_ASSIGN(ExitOp);
+  ExitOp(const ExitOp&) = delete;
+  void operator=(const ExitOp&) = delete;
 };
 
 // A next_iteration op has one input and one output. It makes its input
@@ -94,9 +114,27 @@ class NextIterationOp : public OpKernel {
   bool IsExpensive() override { return false; }
   ~NextIterationOp() override {}
 
-  TF_DISALLOW_COPY_AND_ASSIGN(NextIterationOp);
+  NextIterationOp(const NextIterationOp&) = delete;
+  void operator=(const NextIterationOp&) = delete;
+};
+
+// A LoopCond op has one input and one output. The input is a boolean
+// scalar representing the taken branches of the "pivot" Switch that
+// determines loop termination. As a contract, any high-level front-end
+// should always use port '0' of the "pivot" switches for loop exit.
+class LoopCondOp : public OpKernel {
+ public:
+  explicit LoopCondOp(OpKernelConstruction* context);
+  ~LoopCondOp() override;
+
+  void Compute(OpKernelContext* context) override;
+
+  bool IsExpensive() override;
+
+  LoopCondOp(const LoopCondOp&) = delete;
+  void operator=(const LoopCondOp&) = delete;
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_CONTROL_FLOW_OPS_H_
+#endif  // TENSORFLOW_CORE_KERNELS_CONTROL_FLOW_OPS_H_

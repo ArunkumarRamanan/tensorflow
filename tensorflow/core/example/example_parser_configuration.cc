@@ -16,10 +16,12 @@ limitations under the License.
 
 #include <vector>
 
-#include "tensorflow/core/example/example.pb.h"
-#include "tensorflow/core/example/feature.pb_text.h"
+#include "tensorflow/core/example/feature.pb.h"
+#include "tensorflow/core/framework/attr_value.pb.h"
+#include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/numeric_op.h"
 #include "tensorflow/core/framework/register_types.h"
+#include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/logging.h"
@@ -27,19 +29,19 @@ limitations under the License.
 
 namespace tensorflow {
 
-Status FindNodeIndexByName(const tensorflow::GraphDef& graph,
-                           const string& node_name, int* node_idx) {
+absl::Status FindNodeIndexByName(const tensorflow::GraphDef& graph,
+                                 const string& node_name, int* node_idx) {
   for (int i = 0; i < graph.node_size(); ++i) {
     const auto& node = graph.node(i);
     if (node.name() == node_name) {
       *node_idx = i;
-      return Status::OK();
+      return absl::OkStatus();
     }
   }
   return errors::InvalidArgument(node_name, " not found in GraphDef");
 }
 
-Status ExtractExampleParserConfiguration(
+absl::Status ExtractExampleParserConfiguration(
     const tensorflow::GraphDef& graph, const string& node_name,
     tensorflow::Session* session,
     std::vector<FixedLenFeature>* fixed_len_features,
@@ -112,13 +114,14 @@ Status ExtractExampleParserConfiguration(
 
   for (int i = 0; i < num_sparse; ++i) {
     int input_idx = sparse_keys_start + i;
-    (*var_len_features)[i].key = op_input_tensors[input_idx].scalar<string>()();
+    (*var_len_features)[i].key =
+        op_input_tensors[input_idx].scalar<tstring>()();
   }
 
   for (int i = 0; i < num_dense; ++i) {
     FixedLenFeature& config = (*fixed_len_features)[i];
     int dense_keys_offset = dense_keys_start + i;
-    config.key = op_input_tensors[dense_keys_offset].scalar<string>()();
+    config.key = op_input_tensors[dense_keys_offset].scalar<tstring>()();
 
     int defaults_offset = dense_defaults_start + i;
     config.default_value = op_input_tensors[defaults_offset];
@@ -154,10 +157,10 @@ Status ExtractExampleParserConfiguration(
     (*fixed_len_features)[i].values_output_tensor_name =
         strings::StrCat(node_output_prefix, output_idx);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status ExampleParserConfigurationProtoToFeatureVectors(
+absl::Status ExampleParserConfigurationProtoToFeatureVectors(
     const ExampleParserConfiguration& config_proto,
     std::vector<FixedLenFeature>* fixed_len_features,
     std::vector<VarLenFeature>* var_len_features) {
@@ -192,7 +195,7 @@ Status ExampleParserConfigurationProtoToFeatureVectors(
       var_len_features->push_back(v);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

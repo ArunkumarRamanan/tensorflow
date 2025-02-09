@@ -15,12 +15,16 @@ limitations under the License.
 
 // See docs in ../ops/parsing_ops.cc.
 
+#include "absl/strings/escaping.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/util/tensor_bundle/byte_swap_tensor.h"
 
 namespace tensorflow {
 
@@ -38,13 +42,13 @@ class ParseTensorOp : public OpKernel {
                     "Expected `serialized` to be a scalar, got shape: ",
                     serialized.shape().DebugString()));
 
-    auto serialized_t = serialized.scalar<string>();
+    auto serialized_t = serialized.scalar<tstring>();
 
     TensorProto proto;
     OP_REQUIRES(ctx, ParseProtoUnlimited(&proto, serialized_t()),
                 errors::InvalidArgument(
-                    "Could not parse `serialized` as TensorProto: '",
-                    serialized_t(), "'"));
+                    "Could not parse `serialized` as TensorProto, base64: ",
+                    absl::Base64Escape(serialized_t())));
 
     Tensor output;
     OP_REQUIRES_OK(ctx, ctx->device()->MakeTensorFromProto(
@@ -56,6 +60,9 @@ class ParseTensorOp : public OpKernel {
                                 DataTypeString(output.dtype()), ") and dtype (",
                                 DataTypeString(out_type_), ")"));
 
+    if (!port::kLittleEndian && IsByteSwappable(output.dtype()))
+      OP_REQUIRES_OK(ctx, ByteSwapTensor(&output));
+
     ctx->set_output(0, output);
   }
 
@@ -64,5 +71,38 @@ class ParseTensorOp : public OpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("ParseTensor").Device(DEVICE_CPU), ParseTensorOp);
+
+template <typename T>
+class SerializeTensorOp : public OpKernel {
+ public:
+  using OpKernel::OpKernel;
+
+  void Compute(OpKernelContext* context) override {
+    const Tensor& tensor = context->input(0);
+    TensorProto proto;
+    if (tensor.dtype() == DT_STRING) {
+      tensor.AsProtoField(&proto);
+    } else {
+      if (!port::kLittleEndian && IsByteSwappable(tensor.dtype())) {
+        Tensor ts_ = tensor::DeepCopy(tensor);
+        OP_REQUIRES_OK(context, ByteSwapTensor(&ts_));
+        ts_.AsProtoTensorContent(&proto);
+      } else {
+        tensor.AsProtoTensorContent(&proto);
+      }
+    }
+    Tensor* proto_string = nullptr;
+    OP_REQUIRES_OK(context,
+                   context->allocate_output(0, TensorShape({}), &proto_string));
+    CHECK(SerializeToTString(proto, &proto_string->scalar<tstring>()()));
+  }
+};
+
+#define REGISTER(T)                                                      \
+  REGISTER_KERNEL_BUILDER(                                               \
+      Name("SerializeTensor").Device(DEVICE_CPU).TypeConstraint<T>("T"), \
+      SerializeTensorOp<T>);
+TF_CALL_ALL_TYPES(REGISTER)
+#undef REGISTER
 
 }  // namespace tensorflow

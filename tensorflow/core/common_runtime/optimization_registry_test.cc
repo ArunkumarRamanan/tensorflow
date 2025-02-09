@@ -23,9 +23,9 @@ namespace tensorflow {
 class TestOptimization : public GraphOptimizationPass {
  public:
   static int count_;
-  Status Run(const GraphOptimizationPassOptions& options) {
+  absl::Status Run(const GraphOptimizationPassOptions& options) override {
     ++count_;
-    return Status::OK();
+    return absl::OkStatus();
   }
 };
 
@@ -37,7 +37,13 @@ REGISTER_OPTIMIZATION(OptimizationPassRegistry::PRE_PLACEMENT, 1,
 TEST(OptimizationRegistry, OptimizationPass) {
   EXPECT_EQ(0, TestOptimization::count_);
   GraphOptimizationPassOptions options;
-  EXPECT_EQ(Status::OK(),
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  options.graph = &graph;
+  std::unique_ptr<FunctionLibraryDefinition> flib_def(
+      new FunctionLibraryDefinition(OpRegistry::Global(),
+                                    FunctionDefLibrary()));
+  options.flib_def = flib_def.get();
+  EXPECT_EQ(absl::OkStatus(),
             OptimizationPassRegistry::Global()->RunGrouping(
                 OptimizationPassRegistry::PRE_PLACEMENT, options));
   EXPECT_EQ(1, TestOptimization::count_);
@@ -45,9 +51,8 @@ TEST(OptimizationRegistry, OptimizationPass) {
 
 class UpdateFuncLibPass : public GraphOptimizationPass {
  public:
-  Status Run(const GraphOptimizationPassOptions& options) {
-    options.flib_def->AddFunctionDef(test::function::WXPlusB());
-    return Status::OK();
+  absl::Status Run(const GraphOptimizationPassOptions& options) override {
+    return options.flib_def->AddFunctionDef(test::function::WXPlusB());
   }
 };
 
@@ -66,7 +71,9 @@ class OptimizationPassTest : public ::testing::Test {
   void RunPass() {
     GraphOptimizationPassOptions options;
     options.flib_def = flib_def_.get();
-    EXPECT_EQ(Status::OK(),
+    // Note that options.graph is not set so this test checks that passes
+    // properly handle this being nullptr (esp. Segfault is avoided).
+    EXPECT_EQ(absl::OkStatus(),
               OptimizationPassRegistry::Global()->RunGrouping(
                   OptimizationPassRegistry::POST_REWRITE_FOR_EXEC, options));
   }

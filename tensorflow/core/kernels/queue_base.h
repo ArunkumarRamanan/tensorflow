@@ -19,6 +19,7 @@ limitations under the License.
 #include <deque>
 #include <vector>
 
+#include "absl/base/macros.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/queue_interface.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -31,15 +32,11 @@ limitations under the License.
 
 namespace tensorflow {
 
-namespace barrier {
-class Barrier;
-}  // namespace barrier
-
 // Functionality common to asynchronous QueueInterface implementations.
 class QueueBase : public QueueInterface {
  public:
   // As a possible value of 'capacity'.
-  static const int32 kUnbounded = INT_MAX;
+  static constexpr int32_t kUnbounded = INT_MAX;
 
   // Args:
   //   component_dtypes: The types of each component in a queue-element tuple.
@@ -47,7 +44,7 @@ class QueueBase : public QueueInterface {
   //     which must either be empty (if the shapes are not specified) or
   //     or have the same size as component_dtypes.
   //   name: A name to use for the queue.
-  QueueBase(int32 capacity, const DataTypeVector& component_dtypes,
+  QueueBase(int32_t capacity, const DataTypeVector& component_dtypes,
             const std::vector<TensorShape>& component_shapes,
             const string& name);
 
@@ -56,8 +53,8 @@ class QueueBase : public QueueInterface {
     return component_dtypes_;
   }
 
-  Status ValidateTuple(const Tuple& tuple) override;
-  Status ValidateManyTuple(const Tuple& tuple) override;
+  absl::Status ValidateTuple(const Tuple& tuple) override;
+  absl::Status ValidateManyTuple(const Tuple& tuple) override;
 
   void Close(OpKernelContext* ctx, bool cancel_pending_enqueues,
              DoneCallback callback) override;
@@ -69,18 +66,24 @@ class QueueBase : public QueueInterface {
 
   int32 capacity() const { return capacity_; }
 
-  bool closed() {
+  bool is_closed() const override {
     mutex_lock lock(mu_);
     return closed_;
   }
 
   // Copies the index^th slice (in the first dimension) of parent into element.
-  static Status CopySliceToElement(const Tensor& parent, Tensor* element,
-                                   int64 index);
+  static absl::Status CopySliceToElement(const Tensor& parent, Tensor* element,
+                                         int64_t index);
 
   // Copies element into the index^th slice (in the first dimension) of parent.
-  static Status CopyElementToSlice(const Tensor& element, Tensor* parent,
-                                   int64 index);
+  // NOTE(mrry): This method is deprecated. Use
+  // `tensorflow::batch_util::CopySliceToElement()` defined in
+  // "./batch_util.h" instead.
+  ABSL_DEPRECATED(
+      "Use `tensorflow::batch_util::CopySliceToElement()` defined in "
+      "\"./batch_util.h\" instead.")
+  static absl::Status CopyElementToSlice(const Tensor& element, Tensor* parent,
+                                         int64_t index);
 
  protected:
   enum Action { kEnqueue, kDequeue };
@@ -107,9 +110,9 @@ class QueueBase : public QueueInterface {
   bool specified_shapes() const { return component_shapes_.size() > 0; }
 
   // Code common to Validate*Tuple().
-  Status ValidateTupleCommon(const Tuple& tuple) const;
+  absl::Status ValidateTupleCommon(const Tuple& tuple) const;
 
-  TensorShape ManyOutShape(int i, int64 batch_size) {
+  TensorShape ManyOutShape(int i, int64_t batch_size) {
     TensorShape shape({batch_size});
     shape.AppendShape(component_shapes_[i]);
     return shape;
@@ -123,7 +126,7 @@ class QueueBase : public QueueInterface {
   void CloseAndCancel();
 
   bool TryAttemptLocked(Action action, std::vector<CleanUp>* clean_up)
-      EXCLUSIVE_LOCKS_REQUIRED(mu_);
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // Tries to make progress on the enqueues or dequeues at the front
   // of the *_attempts_ queues.
@@ -132,19 +135,21 @@ class QueueBase : public QueueInterface {
   ~QueueBase() override;
 
   // Helpers for implementing MatchesNodeDef().
-  static string ShapeListString(const gtl::ArraySlice<TensorShape>& shapes);
-  Status MatchesNodeDefOp(const NodeDef& node_def, const string& op) const;
-  Status MatchesNodeDefCapacity(const NodeDef& node_def, int32 capacity) const;
-  Status MatchesNodeDefTypes(const NodeDef& node_def) const;
-  Status MatchesNodeDefShapes(const NodeDef& node_def) const;
+  static string ShapeListString(const absl::Span<const TensorShape>& shapes);
+  absl::Status MatchesNodeDefOp(const NodeDef& node_def,
+                                const string& op) const;
+  absl::Status MatchesNodeDefCapacity(const NodeDef& node_def,
+                                      int32_t capacity) const;
+  absl::Status MatchesNodeDefTypes(const NodeDef& node_def) const;
+  absl::Status MatchesNodeDefShapes(const NodeDef& node_def) const;
 
  protected:
   const int32 capacity_;
   const DataTypeVector component_dtypes_;
   const std::vector<TensorShape> component_shapes_;
   const string name_;
-  mutex mu_;
-  bool closed_ GUARDED_BY(mu_);
+  mutable mutex mu_;
+  bool closed_ TF_GUARDED_BY(mu_);
 
   struct Attempt;
   typedef std::function<RunResult(Attempt*)> RunCallback;
@@ -160,7 +165,7 @@ class QueueBase : public QueueInterface {
     // tuples is used by some implementations allowing dynamic shapes.
     std::vector<Tuple> tuples;
 
-    Attempt(int32 elements_requested, DoneCallback done_callback,
+    Attempt(int32_t elements_requested, DoneCallback done_callback,
             OpKernelContext* context, CancellationManager* cancellation_manager,
             CancellationToken cancellation_token, RunCallback run_callback)
         : elements_requested(elements_requested),
@@ -171,10 +176,11 @@ class QueueBase : public QueueInterface {
           run_callback(run_callback),
           is_cancelled(false) {}
   };
-  std::deque<Attempt> enqueue_attempts_ GUARDED_BY(mu_);
-  std::deque<Attempt> dequeue_attempts_ GUARDED_BY(mu_);
+  std::deque<Attempt> enqueue_attempts_ TF_GUARDED_BY(mu_);
+  std::deque<Attempt> dequeue_attempts_ TF_GUARDED_BY(mu_);
 
-  TF_DISALLOW_COPY_AND_ASSIGN(QueueBase);
+  QueueBase(const QueueBase&) = delete;
+  void operator=(const QueueBase&) = delete;
 };
 
 }  // namespace tensorflow

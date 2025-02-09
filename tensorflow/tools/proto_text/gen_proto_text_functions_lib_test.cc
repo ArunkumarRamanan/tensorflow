@@ -15,21 +15,52 @@ limitations under the License.
 
 #include "tensorflow/tools/proto_text/gen_proto_text_functions_lib.h"
 
+#include <string>
+
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/test.h"
-#include "tensorflow/tools/proto_text/test.pb.h"
 #include "tensorflow/tools/proto_text/test.pb_text.h"
+#include "tensorflow/tools/proto_text/test.pb.h"
 
 namespace tensorflow {
 namespace test {
 namespace {
 
-// Convert <input> to text depending on <short_debug>, then parse that into a
+std::string PrintShortTextFormat(const tensorflow::protobuf::Message& message) {
+  std::string message_short_text;
+
+  protobuf::TextFormat::Printer printer;
+  printer.SetSingleLineMode(true);
+  printer.SetExpandAny(true);
+
+  printer.PrintToString(message, &message_short_text);
+  // Single line mode currently might have an extra space at the end.
+  if (!message_short_text.empty() &&
+      message_short_text[message_short_text.size() - 1] == ' ') {
+    message_short_text.resize(message_short_text.size() - 1);
+  }
+
+  return message_short_text;
+}
+
+std::string PrintTextFormat(const tensorflow::protobuf::Message& message) {
+  std::string message_text;
+
+  protobuf::TextFormat::Printer printer;
+  printer.SetExpandAny(true);
+
+  printer.PrintToString(message, &message_text);
+
+  return message_text;
+}
+
+// Convert <input> to text depending on <short_text>, then parse that into a
 // new message using the generated parse function. Return the new message.
 template <typename T>
-T RoundtripParseProtoOrDie(const T& input, bool short_debug) {
-  const string s = short_debug ? input.ShortDebugString() : input.DebugString();
+T RoundtripParseProtoOrDie(const T& input, bool short_text) {
+  const string s =
+      short_text ? PrintShortTextFormat(input) : PrintTextFormat(input);
   T t;
   EXPECT_TRUE(ProtoParseFromString(s, &t)) << "Failed to parse " << s;
   return t;
@@ -39,12 +70,12 @@ T RoundtripParseProtoOrDie(const T& input, bool short_debug) {
 // matches DebugString calls on the proto, and verifies parsing the
 // DebugString output works. It does this for regular and short
 // debug strings.
-#define EXPECT_TEXT_TRANSFORMS_MATCH()                               \
-  EXPECT_EQ(proto.DebugString(), ProtoDebugString(proto));           \
-  EXPECT_EQ(proto.ShortDebugString(), ProtoShortDebugString(proto)); \
-  EXPECT_EQ(proto.DebugString(),                                     \
-            RoundtripParseProtoOrDie(proto, true).DebugString());    \
-  EXPECT_EQ(proto.DebugString(),                                     \
+#define EXPECT_TEXT_TRANSFORMS_MATCH()                                  \
+  EXPECT_EQ(PrintTextFormat(proto), ProtoDebugString(proto));           \
+  EXPECT_EQ(PrintShortTextFormat(proto), ProtoShortDebugString(proto)); \
+  EXPECT_EQ(proto.DebugString(),                                        \
+            RoundtripParseProtoOrDie(proto, true).DebugString());       \
+  EXPECT_EQ(proto.DebugString(),                                        \
             RoundtripParseProtoOrDie(proto, false).DebugString());
 
 // Macro for failure cases. Verifies both protobuf and proto_text to
@@ -93,13 +124,15 @@ TEST(CreateProtoDebugStringLibTest, ValidSimpleTypes) {
   proto.set_optional_int64(std::numeric_limits<protobuf_int64>::max());
   proto.set_optional_uint32(std::numeric_limits<uint32>::max());
   proto.set_optional_uint64(std::numeric_limits<uint64>::max());
-  proto.set_optional_float(std::numeric_limits<float>::max());
+  // TODO(b/67475677): Re-enable after resolving float precision issue
+  // proto.set_optional_float(std::numeric_limits<float>::max());
   proto.set_optional_double(std::numeric_limits<double>::max());
   EXPECT_TEXT_TRANSFORMS_MATCH();
 
   // Least positive numeric values.
   proto.Clear();
-  proto.set_optional_float(std::numeric_limits<float>::min());
+  // TODO(b/67475677): Re-enable after resolving float precision issue
+  // proto.set_optional_float(std::numeric_limits<float>::min());
   proto.set_optional_double(std::numeric_limits<double>::min());
   EXPECT_TEXT_TRANSFORMS_MATCH();
 
@@ -107,7 +140,8 @@ TEST(CreateProtoDebugStringLibTest, ValidSimpleTypes) {
   proto.Clear();
   proto.set_optional_int32(std::numeric_limits<int32>::lowest());
   proto.set_optional_int64(std::numeric_limits<protobuf_int64>::lowest());
-  proto.set_optional_float(std::numeric_limits<float>::lowest());
+  // TODO(b/67475677): Re-enable after resolving float precision issue
+  // proto.set_optional_float(std::numeric_limits<float>::lowest());
   proto.set_optional_double(std::numeric_limits<double>::lowest());
   EXPECT_TEXT_TRANSFORMS_MATCH();
 
@@ -452,7 +486,10 @@ TEST(CreateProtoDebugStringLibTest, Enums) {
        "repeated_nested_enum: 1"));
 
   EXPECT_PARSE_SUCCESS("", "optional_nested_enum: -0");
-  EXPECT_PARSE_FAILURE("optional_nested_enum: 6");
+  // TODO(amauryfa): restore the line below when protobuf::TextFormat also
+  // supports unknown enum values.
+  // EXPECT_PARSE_SUCCESS("optional_nested_enum: 6", "optional_nested_enum: 6");
+  EXPECT_PARSE_FAILURE("optional_nested_enum: 2147483648");  // > INT32_MAX
   EXPECT_PARSE_FAILURE("optional_nested_enum: BARNONE");
   EXPECT_PARSE_FAILURE("optional_nested_enum: 'BAR'");
   EXPECT_PARSE_FAILURE("optional_nested_enum: \"BAR\" ");

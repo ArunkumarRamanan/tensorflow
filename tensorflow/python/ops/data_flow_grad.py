@@ -14,13 +14,9 @@
 # ==============================================================================
 
 """Gradients for operators defined in data_flow_ops.py."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-from six.moves import xrange  # pylint: disable=redefined-builtin
 
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import data_flow_ops
@@ -39,14 +35,16 @@ def _DynamicPartitionGrads(op, *grads):
       math_ops.range(math_ops.reduce_prod(prefix_shape)), prefix_shape)
   partitioned_indices = data_flow_ops.dynamic_partition(
       original_indices, indices, num_partitions)
-  reconstructed = data_flow_ops.dynamic_stitch(partitioned_indices, grads)
+  reconstructed = data_flow_ops.parallel_dynamic_stitch(partitioned_indices,
+                                                        grads)
   reconstructed = array_ops.reshape(reconstructed, array_ops.shape(data))
   return [reconstructed, None]
 
 
 @ops.RegisterGradient("DynamicStitch")
+@ops.RegisterGradient("ParallelDynamicStitch")
 def _DynamicStitchGrads(op, grad):
-  """Gradients for DynamicStitch."""
+  """Gradients for DynamicStitch and ParallelDynamicStitch."""
 
   num_values = len(op.inputs) // 2
   indices_grad = [None] * num_values
@@ -54,8 +52,9 @@ def _DynamicStitchGrads(op, grad):
   def AsInt32(x):
     return (x if op.inputs[0].dtype == dtypes.int32 else
             math_ops.cast(x, dtypes.int32))
-  inputs = [AsInt32(op.inputs[i]) for i in xrange(num_values)]
-  if isinstance(grad, ops.IndexedSlices):
+
+  inputs = [AsInt32(op.inputs[i]) for i in range(num_values)]
+  if isinstance(grad, indexed_slices.IndexedSlices):
     output_shape = array_ops.shape(op.outputs[0])
     output_rows = output_shape[0]
     grad = math_ops.unsorted_segment_sum(grad.values, grad.indices, output_rows)
@@ -78,5 +77,6 @@ ops.NotDifferentiable("StackPop")
 ops.NotDifferentiable("StackClose")
 
 ops.NotDifferentiable("GetSessionHandle")
+ops.NotDifferentiable("GetSessionHandleV2")
 ops.NotDifferentiable("GetSessionTensor")
 ops.NotDifferentiable("DeleteSessionTensor")

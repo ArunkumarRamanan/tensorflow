@@ -28,13 +28,11 @@ namespace tensorflow {
 
 class CopyTensor {
  public:
-  typedef void (*CopyFunction)(DeviceContext* send_dev_context,
-                               DeviceContext* recv_dev_context, Device* src,
-                               Device* dst,
-                               const AllocatorAttributes src_alloc_attr,
-                               const AllocatorAttributes dst_alloc_attr,
-                               const Tensor* input, Tensor* output,
-                               StatusCallback done);
+  typedef void (*CopyFunction)(
+      DeviceContext* send_dev_context, DeviceContext* recv_dev_context,
+      Device* src, Device* dst, const AllocatorAttributes src_alloc_attr,
+      const AllocatorAttributes dst_alloc_attr, const Tensor* input,
+      Tensor* output, int dev_to_dev_stream_index, StatusCallback done);
 
   // Copies "input" to "output" between devices accessible to the
   // local process via some DMA-like method.  "edge_name" is the name
@@ -42,11 +40,14 @@ class CopyTensor {
   // the type of devices and memory in use, the copy may be performed
   // synchronously or asynchronously.  'done' will be invoked only
   // after the copy is actually complete.
-  static void ViaDMA(StringPiece edge_name, DeviceContext* send_dev_context,
+  static void ViaDMA(absl::string_view edge_name,
+                     DeviceContext* send_dev_context,
                      DeviceContext* recv_dev_context, Device* src, Device* dst,
                      const AllocatorAttributes src_alloc_attr,
                      const AllocatorAttributes dst_alloc_attr,
-                     const Tensor* input, Tensor* output, StatusCallback done);
+                     const Tensor* input, Tensor* output,
+                     int dev_to_dev_stream_index, StatusCallback done,
+                     bool sync_dst_compute = true);
 
   // Object used to call Register() at static-initialization time.
   // Note: This should only ever be used as a global-static object; no stack
@@ -55,19 +56,24 @@ class CopyTensor {
    public:
     Registration(DeviceType sender_device_type, DeviceType receiver_device_type,
                  CopyFunction copy_function) {
-      TF_QCHECK_OK(
-          Register(sender_device_type, receiver_device_type, copy_function));
+      TF_QCHECK_OK(Register(sender_device_type, receiver_device_type,
+                            copy_function, /*is_pluggable_device=*/false));
     }
   };
 
- private:
   // Register a function for copying between two specific DeviceTypes.
   // Note: This should only be called via the constructor of
-  // CopyTensor::Registration.
-  static Status Register(DeviceType sender_device_type,
-                         DeviceType receiver_device_type,
-                         CopyFunction copy_function);
+  // CopyTensor::Registration or from PluggableDevice implementation.
+  static absl::Status Register(DeviceType sender_device_type,
+                               DeviceType receiver_device_type,
+                               CopyFunction copy_function,
+                               bool is_pluggable_device);
 };
+
+void CopyDeviceToHost(const Tensor* input, Allocator* cpu_allocator,
+                      Allocator* out_allocator, absl::string_view edge_name,
+                      Device* src, Tensor* output,
+                      DeviceContext* send_dev_context, StatusCallback done);
 
 }  // namespace tensorflow
 

@@ -12,8 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef TENSORFLOW_KERNELS_LOSS_H_
-#define TENSORFLOW_KERNELS_LOSS_H_
+#ifndef TENSORFLOW_CORE_KERNELS_LOSS_H_
+#define TENSORFLOW_CORE_KERNELS_LOSS_H_
 
 #include "tensorflow/core/lib/core/status.h"
 
@@ -52,8 +52,8 @@ class DualLossUpdater {
 
   // Converts binary example labels from 0.0 or 1.0 to appropriate range for
   // each loss function.
-  virtual Status ConvertLabel(float* const example_label) const = 0;
+  virtual absl::Status ConvertLabel(float* const example_label) const = 0;
 };
 
 }  // namespace tensorflow
-#endif  // TENSORFLOW_KERNELS_LOSS_H_
+#endif  // TENSORFLOW_CORE_KERNELS_LOSS_H_

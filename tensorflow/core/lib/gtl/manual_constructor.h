@@ -22,15 +22,15 @@ limitations under the License.
 // (When I say ManualConstructor statically allocates space, I mean that
 // the ManualConstructor object itself is forced to be the right size.)
 
-#ifndef TENSORFLOW_LIB_GTL_MANUAL_CONSTRUCTOR_H_
-#define TENSORFLOW_LIB_GTL_MANUAL_CONSTRUCTOR_H_
+#ifndef TENSORFLOW_CORE_LIB_GTL_MANUAL_CONSTRUCTOR_H_
+#define TENSORFLOW_CORE_LIB_GTL_MANUAL_CONSTRUCTOR_H_
 
 #include <stddef.h>
 #include <new>
 #include <utility>
 
 #include "tensorflow/core/platform/macros.h"
-#include "tensorflow/core/platform/mem.h"  // For aligned_malloc/aligned_free
+#include "tensorflow/core/platform/mem.h"
 
 namespace tensorflow {
 namespace gtl {
@@ -53,11 +53,10 @@ template <int size>
 struct AlignType<0, size> {
   typedef char result[size];
 };
-#if defined(COMPILER_MSVC)
+#if defined(_MSC_VER)
 #define TF_LIB_GTL_ALIGN_ATTRIBUTE(X) __declspec(align(X))
 #define TF_LIB_GTL_ALIGN_OF(T) __alignof(T)
-#elif defined(COMPILER_GCC3) || __GNUC__ >= 3 || defined(__APPLE__) || \
-    defined(COMPILER_ICC) || defined(OS_NACL) || defined(__clang__)
+#else
 #define TF_LIB_GTL_ALIGN_ATTRIBUTE(X) __attribute__((aligned(X)))
 #define TF_LIB_GTL_ALIGN_OF(T) __alignof__(T)
 #endif
@@ -127,9 +126,9 @@ class ManualConstructor {
   // Support users creating arrays of ManualConstructor<>s.  This ensures that
   // the array itself has the correct alignment.
   static void* operator new[](size_t size) {
-    return port::aligned_malloc(size, TF_LIB_GTL_ALIGN_OF(Type));
+    return port::AlignedMalloc(size, TF_LIB_GTL_ALIGN_OF(Type));
   }
-  static void operator delete[](void* mem) { port::aligned_free(mem); }
+  static void operator delete[](void* mem) { port::AlignedFree(mem); }
 
   inline Type* get() { return reinterpret_cast<Type*>(space_); }
   inline const Type* get() const {
@@ -243,4 +242,4 @@ class ManualConstructor {
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_LIB_GTL_MANUAL_CONSTRUCTOR_H_
+#endif  // TENSORFLOW_CORE_LIB_GTL_MANUAL_CONSTRUCTOR_H_

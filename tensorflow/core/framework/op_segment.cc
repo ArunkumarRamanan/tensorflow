@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/core/framework/op_segment.h"
 
+#include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
@@ -25,18 +26,18 @@ limitations under the License.
 namespace tensorflow {
 
 OpSegment::Item::~Item() {
-  for (auto kv : name_kernel) delete kv.second;
+  for (const auto& kv : name_kernel) delete kv.second;
 }
 
 OpSegment::OpSegment() {}
 
 OpSegment::~OpSegment() {
-  for (auto kv : sessions_) delete kv.second;
+  for (const auto& kv : sessions_) delete kv.second;
 }
 
-Status OpSegment::FindOrCreate(const string& session_handle,
-                               const string& node_name, OpKernel** kernel,
-                               CreateKernelFn create_fn) {
+absl::Status OpSegment::FindOrCreate(const string& session_handle,
+                                     const string& node_name, OpKernel** kernel,
+                                     CreateKernelFn create_fn) {
   {
     mutex_lock l(mu_);
     auto item = gtl::FindPtrOrNull(sessions_, session_handle);
@@ -45,10 +46,10 @@ Status OpSegment::FindOrCreate(const string& session_handle,
     }
     *kernel = gtl::FindPtrOrNull(item->name_kernel, node_name);
     if (*kernel != nullptr) {
-      return Status::OK();
+      return absl::OkStatus();
     }
   }
-  Status s = create_fn(kernel);
+  absl::Status s = create_fn(kernel);
   if (!s.ok()) {
     LOG(ERROR) << "Create kernel failed: " << s;
     return s;
@@ -67,7 +68,7 @@ Status OpSegment::FindOrCreate(const string& session_handle,
       *kernel = *p_kernel;
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void OpSegment::AddHold(const string& session_handle) {
@@ -97,6 +98,14 @@ void OpSegment::RemoveHold(const string& session_handle) {
     }
   }
   delete item;
+}
+
+bool OpSegment::ShouldOwnKernel(FunctionLibraryRuntime* lib,
+                                const string& node_op) {
+  // OpSegment should not own kernel if the node is stateless, or a function.
+  return lib->IsStateful(node_op) &&
+         lib->GetFunctionLibraryDefinition()->Find(node_op) == nullptr &&
+         node_op != "PartitionedCall" && node_op != "StatefulPartitionedCall";
 }
 
 }  // end namespace tensorflow

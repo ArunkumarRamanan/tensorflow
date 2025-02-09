@@ -19,8 +19,9 @@ limitations under the License.
 
 #include <numeric>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_util.h"
@@ -50,8 +51,9 @@ class SparseSoftmaxOp : public OpKernel {
                 errors::InvalidArgument(
                     "Input sp_indices should be a matrix but received shape: ",
                     indices_t->shape().DebugString()));
-    OP_REQUIRES(context, TensorShapeUtils::IsVector(values_t->shape()) &&
-                             TensorShapeUtils::IsVector(shape_t->shape()),
+    OP_REQUIRES(context,
+                TensorShapeUtils::IsVector(values_t->shape()) &&
+                    TensorShapeUtils::IsVector(shape_t->shape()),
                 errors::InvalidArgument(
                     "Inputs sp_values and sp_shape should be vectors "
                     "but received shapes: ",
@@ -61,15 +63,16 @@ class SparseSoftmaxOp : public OpKernel {
                 errors::InvalidArgument(
                     "Input should have rank >= 2, but received shape: ",
                     shape_t->SummarizeValue(3)));
-    OP_REQUIRES(context,
-                indices_t->dim_size(0) < std::numeric_limits<int>::max(),
-                errors::InvalidArgument(
-                    "Number of non-zero elements exceeds int32 range"));
+    TensorShape shape;
+    OP_REQUIRES_OK(context, TensorShape::BuildTensorShape(
+                                shape_t->flat<int64_t>(), &shape));
 
-    const int nnz = static_cast<int>(indices_t->dim_size(0));
+    const int64_t nnz = indices_t->dim_size(0);
     const int rank = static_cast<int>(indices_t->dim_size(1));
-    SparseTensor st(tensor::DeepCopy(*indices_t), tensor::DeepCopy(*values_t),
-                    TensorShape(shape_t->flat<int64>()));
+    SparseTensor st;
+    OP_REQUIRES_OK(
+        context, SparseTensor::Create(tensor::DeepCopy(*indices_t),
+                                      tensor::DeepCopy(*values_t), shape, &st));
 
     Tensor *output_values = nullptr;
     OP_REQUIRES_OK(context, context->allocate_output(0, TensorShape({nnz}),
@@ -81,12 +84,13 @@ class SparseSoftmaxOp : public OpKernel {
                                                    TensorShape({}), &tmp_t));
     typename TTypes<T>::Scalar tmp_scalar = tmp_t.scalar<T>();
 
-    gtl::InlinedVector<int64, 4> dims(rank);
+    absl::InlinedVector<int64_t, 4UL> dims(rank);
     std::iota(dims.begin(), dims.end(), 0);
     // { 0, ..., rank-1 }.
-    const ArraySlice<int64> kReorderDims(dims);
+    const absl::Span<const int64_t> kReorderDims(dims);
     // All but the last dim -- the class dimension to be max-reduced along.
-    const ArraySlice<int64> kGroupByDims(kReorderDims, 0, rank - 1);
+    const absl::Span<const int64_t> kGroupByDims =
+        kReorderDims.subspan(0, rank - 1);
     st.Reorder<T>(kReorderDims);
     int count = 0;
 
@@ -123,6 +127,7 @@ class SparseSoftmaxOp : public OpKernel {
       Name("SparseSoftmax").Device(DEVICE_CPU).TypeConstraint<T>("T"), \
       SparseSoftmaxOp<CPUDevice, T>)
 
+REGISTER_KERNEL(Eigen::half);
 REGISTER_KERNEL(float);
 REGISTER_KERNEL(double);
 #undef REGISTER_KERNEL

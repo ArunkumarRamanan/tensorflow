@@ -16,34 +16,33 @@ limitations under the License.
 // See docs in ../ops/io_ops.cc.
 
 #include <memory>
+
+#include "absl/strings/escaping.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/reader_base.h"
+#include "tensorflow/core/framework/reader_base.pb.h"
 #include "tensorflow/core/framework/reader_op_kernel.h"
 #include "tensorflow/core/framework/tensor_shape.h"
-#include "tensorflow/core/kernels/reader_base.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/lib/io/buffered_inputstream.h"
+#include "tensorflow/core/lib/io/path.h"
+#include "tensorflow/core/lib/io/random_inputstream.h"
+#include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/protobuf.h"
 
 namespace tensorflow {
 
-static Status ReadEntireFile(Env* env, const string& filename,
-                             string* contents) {
-  uint64 file_size = 0;
-  TF_RETURN_IF_ERROR(env->GetFileSize(filename, &file_size));
-  contents->resize(file_size);
+template <typename T>
+static absl::Status ReadEntireFile(Env* env, const string& filename,
+                                   T* contents) {
   std::unique_ptr<RandomAccessFile> file;
   TF_RETURN_IF_ERROR(env->NewRandomAccessFile(filename, &file));
-  StringPiece data;
-  TF_RETURN_IF_ERROR(file->Read(0, file_size, &data, &(*contents)[0]));
-  if (data.size() != file_size) {
-    return errors::DataLoss("Truncated read of '", filename, "' expected ",
-                            file_size, " got ", data.size());
-  }
-  if (data.data() != &(*contents)[0]) {
-    memmove(&(*contents)[0], data.data(), data.size());
-  }
-  return Status::OK();
+  io::RandomAccessInputStream input_stream(file.get());
+  io::BufferedInputStream in(&input_stream, 1 << 20);
+  TF_RETURN_IF_ERROR(in.ReadAll(contents));
+  return absl::OkStatus();
 }
 
 class WholeFileReader : public ReaderBase {
@@ -52,32 +51,32 @@ class WholeFileReader : public ReaderBase {
       : ReaderBase(strings::StrCat("WholeFileReader '", node_name, "'")),
         env_(env) {}
 
-  Status ReadLocked(string* key, string* value, bool* produced,
-                    bool* at_end) override {
+  absl::Status ReadLocked(tstring* key, tstring* value, bool* produced,
+                          bool* at_end) override {
     *key = current_work();
     TF_RETURN_IF_ERROR(ReadEntireFile(env_, *key, value));
     *produced = true;
     *at_end = true;
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Stores state in a ReaderBaseState proto, since WholeFileReader has
   // no additional state beyond ReaderBase.
-  Status SerializeStateLocked(string* state) override {
+  absl::Status SerializeStateLocked(tstring* state) override {
     ReaderBaseState base_state;
     SaveBaseState(&base_state);
-    base_state.SerializeToString(state);
-    return Status::OK();
+    SerializeToTString(base_state, state);
+    return absl::OkStatus();
   }
 
-  Status RestoreStateLocked(const string& state) override {
+  absl::Status RestoreStateLocked(const tstring& state) override {
     ReaderBaseState base_state;
     if (!ParseProtoUnlimited(&base_state, state)) {
       return errors::InvalidArgument("Could not parse state for ", name(), ": ",
-                                     str_util::CEscape(state));
+                                     absl::CEscape(state));
     }
     TF_RETURN_IF_ERROR(RestoreBaseState(base_state));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
  private:
@@ -96,6 +95,8 @@ class WholeFileReaderOp : public ReaderOpKernel {
 
 REGISTER_KERNEL_BUILDER(Name("WholeFileReader").Device(DEVICE_CPU),
                         WholeFileReaderOp);
+REGISTER_KERNEL_BUILDER(Name("WholeFileReaderV2").Device(DEVICE_CPU),
+                        WholeFileReaderOp);
 
 class ReadFileOp : public OpKernel {
  public:
@@ -112,11 +113,39 @@ class ReadFileOp : public OpKernel {
     OP_REQUIRES_OK(context, context->allocate_output("contents",
                                                      TensorShape({}), &output));
     OP_REQUIRES_OK(context,
-                   ReadEntireFile(context->env(), input->scalar<string>()(),
-                                  &output->scalar<string>()()));
+                   ReadEntireFile(context->env(), input->scalar<tstring>()(),
+                                  &output->scalar<tstring>()()));
   }
 };
 
 REGISTER_KERNEL_BUILDER(Name("ReadFile").Device(DEVICE_CPU), ReadFileOp);
 
+class WriteFileOp : public OpKernel {
+ public:
+  using OpKernel::OpKernel;
+  void Compute(OpKernelContext* context) override {
+    const Tensor* filename_input;
+    const Tensor* contents_input;
+    OP_REQUIRES_OK(context, context->input("filename", &filename_input));
+    OP_REQUIRES_OK(context, context->input("contents", &contents_input));
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(filename_input->shape()),
+                errors::InvalidArgument(
+                    "Input filename tensor must be scalar, but had shape: ",
+                    filename_input->shape().DebugString()));
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(contents_input->shape()),
+                errors::InvalidArgument(
+                    "Contents tensor must be scalar, but had shape: ",
+                    contents_input->shape().DebugString()));
+    const string& filename = filename_input->scalar<tstring>()();
+    const string dir(io::Dirname(filename));
+    if (!context->env()->FileExists(dir).ok()) {
+      OP_REQUIRES_OK(context, context->env()->RecursivelyCreateDir(dir));
+    }
+    OP_REQUIRES_OK(context,
+                   WriteStringToFile(context->env(), filename,
+                                     contents_input->scalar<tstring>()()));
+  }
+};
+
+REGISTER_KERNEL_BUILDER(Name("WriteFile").Device(DEVICE_CPU), WriteFileOp);
 }  // namespace tensorflow

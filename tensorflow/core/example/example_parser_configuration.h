@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_EXAMPLE_EXAMPLE_PARSER_CONFIGURATION_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_EXAMPLE_EXAMPLE_PARSER_CONFIGURATION_H_
+#ifndef TENSORFLOW_CORE_EXAMPLE_EXAMPLE_PARSER_CONFIGURATION_H_
+#define TENSORFLOW_CORE_EXAMPLE_EXAMPLE_PARSER_CONFIGURATION_H_
 
 #include <string>
 #include <vector>
@@ -37,7 +37,7 @@ namespace tensorflow {
 
 // Given a graph and the node_name of a ParseExample op,
 // extract the FixedLenFeature/VarLenFeature configurations.
-Status ExtractExampleParserConfiguration(
+absl::Status ExtractExampleParserConfiguration(
     const tensorflow::GraphDef& graph, const string& node_name,
     tensorflow::Session* session,
     std::vector<FixedLenFeature>* fixed_len_features,
@@ -46,11 +46,11 @@ Status ExtractExampleParserConfiguration(
 // Given a config proto, ostensibly extracted via python,
 // fill a vector of C++ structs suitable for calling
 // the tensorflow.Example -> Tensor conversion code.
-Status ExampleParserConfigurationProtoToFeatureVectors(
+absl::Status ExampleParserConfigurationProtoToFeatureVectors(
     const ExampleParserConfiguration& config_proto,
     std::vector<FixedLenFeature>* fixed_len_features,
     std::vector<VarLenFeature>* var_len_features);
 
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_EXAMPLE_EXAMPLE_PARSE_CONFIGURATION_H_
+#endif  // TENSORFLOW_CORE_EXAMPLE_EXAMPLE_PARSER_CONFIGURATION_H_

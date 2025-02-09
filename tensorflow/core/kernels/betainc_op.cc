@@ -21,7 +21,7 @@ limitations under the License.
 #define EIGEN_HAS_C99_MATH 1
 
 #include "tensorflow/core/kernels/betainc_op.h"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/numeric_op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
@@ -39,7 +39,7 @@ class BetaincOp : public OpKernel {
  public:
   explicit BetaincOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
 
-  void Compute(OpKernelContext* ctx) {
+  void Compute(OpKernelContext* ctx) override {
     const Tensor& a = ctx->input(0);
     const Tensor& b = ctx->input(1);
     const Tensor& x = ctx->input(2);
@@ -122,7 +122,8 @@ REGISTER_KERNELS(float);
 REGISTER_KERNELS(double);
 #undef REGISTER_KERNELS
 
-#if GOOGLE_CUDA
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA) || \
+    (defined(TENSORFLOW_USE_ROCM) && TENSORFLOW_USE_ROCM)
 // Forward declarations of the functor specializations for GPU.
 namespace functor {
 #define DECLARE_GPU_SPEC_NDIM(T, NDIM)                               \
@@ -164,6 +165,6 @@ REGISTER_GPU_KERNELS(float);
 REGISTER_GPU_KERNELS(double);
 #undef REGISTER_GPU_KERNELS
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 }  // namespace tensorflow

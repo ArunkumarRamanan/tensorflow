@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/core/distributed_runtime/rpc/grpc_session.h"
 
+#include <string>
+
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/distributed_runtime/rpc/grpc_testlib.h"
 #include "tensorflow/core/framework/graph.pb.h"
@@ -23,13 +26,12 @@ limitations under the License.
 #include "tensorflow/core/graph/default_device.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/graph/testlib.h"
-#include "tensorflow/core/lib/core/error_codes.pb.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/test.h"
-#include "tensorflow/core/protobuf/master.pb.h"
+#include "tensorflow/core/protobuf/error_codes.pb.h"
 #include "tensorflow/core/public/session.h"
 #include "tensorflow/core/util/port.h"
 
@@ -71,9 +73,8 @@ static void IsSingleFloatValue(const Tensor& val, float expected_val) {
 
 static SessionOptions Options(const string& target, int placement_period) {
   SessionOptions options;
-  // NOTE(mrry): GrpcSession requires a grpc:// scheme prefix in the target
-  // string.
   options.target = strings::StrCat("grpc://", target);
+  options.config.set_isolate_session_state(false);
   options.config.set_placement_period(placement_period);
   options.config.mutable_graph_options()
       ->mutable_optimizer_options()
@@ -82,8 +83,12 @@ static SessionOptions Options(const string& target, int placement_period) {
 }
 
 static Session* NewRemote(const SessionOptions& options) {
+  LOG(INFO) << "Connecting to " << options.target;
   return CHECK_NOTNULL(NewSession(options));
 }
+
+using test::TestClusterConfig;
+using test::TestJob;
 
 TEST(GrpcSessionTest, BasicNonProtoAPI) {
   GraphDef graph;
@@ -92,19 +97,22 @@ TEST(GrpcSessionTest, BasicNonProtoAPI) {
   CreateGraphDef(&graph, node_names);
 
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 2, &cluster));
-
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
   std::unique_ptr<Session> session(
       NewRemote(Options(cluster->targets()[0], 1)));
   ASSERT_TRUE(session != nullptr);
 
   for (int iters = 0; iters < 25; ++iters) {
-    TF_CHECK_OK(session->Create(graph));
+    TF_ASSERT_OK(session->Create(graph));
     {
       // Just run to target node
       std::vector<std::pair<string, Tensor>> inputs;
       std::vector<string> targets = {node_names[2]};
-      TF_CHECK_OK(session->Run(inputs, {}, targets, nullptr));
+      TF_ASSERT_OK(session->Run(inputs, {}, targets, nullptr));
     }
     {
       // Run to a target node and a real tensor
@@ -112,13 +120,97 @@ TEST(GrpcSessionTest, BasicNonProtoAPI) {
       std::vector<string> names = {node_names[2] + ":0"};
       std::vector<string> targets = {node_names[1]};
       std::vector<Tensor> outputs;
-      TF_CHECK_OK(session->Run(inputs, names, targets, &outputs));
+      TF_ASSERT_OK(session->Run(inputs, names, targets, &outputs));
       ASSERT_TRUE(outputs[0].IsInitialized());
       ASSERT_EQ(4.0, outputs[0].flat<float>()(0));
     }
 
-    TF_CHECK_OK(session->Close());
+    TF_ASSERT_OK(session->Close());
   }
+}
+
+TEST(GrpcSessionTest, BasicCallable) {
+  GraphDef graph;
+  string node_names[3];
+  // c = a * b
+  CreateGraphDef(&graph, node_names);
+
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
+
+  std::unique_ptr<Session> session(
+      NewRemote(Options(cluster->targets()[0], 1)));
+  ASSERT_TRUE(session != nullptr);
+
+  for (int iters = 0; iters < 25; ++iters) {
+    TF_ASSERT_OK(session->Create(graph));
+    {
+      // Just run to target node
+      CallableOptions opts;
+      opts.add_target(node_names[2]);
+      Session::CallableHandle handle;
+      TF_ASSERT_OK(session->MakeCallable(opts, &handle));
+      TF_ASSERT_OK(session->RunCallable(handle, {}, nullptr, nullptr));
+      TF_ASSERT_OK(session->ReleaseCallable(handle));
+    }
+    {
+      // Run to a target node and a real tensor
+      CallableOptions opts;
+      opts.add_target(node_names[1]);
+      opts.add_fetch(node_names[2] + ":0");
+      Session::CallableHandle handle;
+      TF_ASSERT_OK(session->MakeCallable(opts, &handle));
+      std::vector<Tensor> outputs;
+      TF_ASSERT_OK(session->RunCallable(handle, {}, &outputs, nullptr));
+      ASSERT_EQ(1, outputs.size());
+      ASSERT_TRUE(outputs[0].IsInitialized());
+      ASSERT_EQ(4.0, outputs[0].flat<float>()(0));
+      TF_ASSERT_OK(session->ReleaseCallable(handle));
+    }
+
+    TF_ASSERT_OK(session->Close());
+  }
+}
+
+TEST(GrpcSessionTest, CallableWithOnDeviceFeedsAndFetches) {
+  // Specifying feeds/fetch devices for remote sessions is not yet defined.
+  // Ensure that the error is graceful.
+  GraphDef graph;
+  string node_names[3];
+  // c = a * b
+  CreateGraphDef(&graph, node_names);
+
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
+
+  std::unique_ptr<Session> session(
+      NewRemote(Options(cluster->targets()[0], 1)));
+  ASSERT_TRUE(session != nullptr);
+
+  TF_ASSERT_OK(session->Create(graph));
+
+  std::vector<DeviceAttributes> devices;
+  TF_ASSERT_OK(session->ListDevices(&devices));
+  ASSERT_GT(devices.size(), 0);
+  const string device_name = devices.back().name();
+
+  CallableOptions opts;
+  const string fetch = node_names[2] + ":0";
+  opts.add_fetch(fetch);
+  opts.mutable_fetch_devices()->insert({fetch, device_name});
+
+  Session::CallableHandle handle;
+  absl::Status status = session->MakeCallable(opts, &handle);
+  EXPECT_EQ(error::UNIMPLEMENTED, status.code());
+  TF_ASSERT_OK(session->Close());
 }
 
 TEST(GrpcSessionTest, BasicNonProtoAPIConsistentOrder) {
@@ -128,7 +220,11 @@ TEST(GrpcSessionTest, BasicNonProtoAPIConsistentOrder) {
   CreateGraphDef(&graph, node_names);
 
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 2, &cluster));
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
 
   std::unique_ptr<Session> session(
       NewRemote(Options(cluster->targets()[0], 1)));
@@ -160,7 +256,11 @@ TEST(GrpcSessionTest, NonLocalWithFilters) {
   CreateGraphDef(&graph, node_names);
 
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 2, &cluster));
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
 
   SessionOptions options;
   options.target = strings::StrCat("grpc://", cluster->targets()[0]);
@@ -172,16 +272,86 @@ TEST(GrpcSessionTest, NonLocalWithFilters) {
   {
     GraphDef graph_copy(graph);
     graph::SetDefaultDevice(cluster->devices()[0].name(), &graph_copy);
-    TF_CHECK_OK(session->Create(graph_copy));
-    TF_CHECK_OK(session->Run({}, {}, {node_names[2]}, nullptr));
-    TF_CHECK_OK(session->Close());
+    TF_ASSERT_OK(session->Create(graph_copy));
+    TF_ASSERT_OK(session->Run({}, {}, {node_names[2]}, nullptr));
+    TF_ASSERT_OK(session->Close());
   }
   {
     GraphDef graph_copy(graph);
     graph::SetDefaultDevice(cluster->devices()[1].name(), &graph_copy);
     auto status = session->Create(graph_copy);
-    EXPECT_EQ(tensorflow::error::INVALID_ARGUMENT, status.code());
+    EXPECT_EQ(absl::StatusCode::kInvalidArgument, status.code());
   }
+}
+
+TEST(GrpcSessionTest, FetchMultipleTimes) {
+  GraphDef graph;
+  string node_names[3];
+  CreateGraphDef(&graph, node_names);
+
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
+
+  std::unique_ptr<Session> session(
+      NewRemote(Options(cluster->targets()[0], 1)));
+  ASSERT_TRUE(session != nullptr);
+
+  TF_ASSERT_OK(session->Create(graph));
+  const std::vector<std::pair<string, Tensor>> inputs;
+  std::vector<Tensor> outputs;
+
+  const string node = node_names[2] + ":0";
+  TF_ASSERT_OK(session->Run(inputs, {node, node}, {}, &outputs));
+  EXPECT_EQ(2, outputs.size());
+  for (int i = 0; i < outputs.size(); ++i) {
+    const Tensor& t = outputs[i];
+    ASSERT_TRUE(t.IsInitialized()) << i;
+    ASSERT_EQ(4.0, t.flat<float>()(0)) << i;
+  }
+  TF_ASSERT_OK(session->Close());
+}
+
+TEST(GrpcSessionTest, DisableOutputPartitionGraphs) {
+  GraphDef graph;
+  string node_names[3];
+  CreateGraphDef(&graph, node_names);
+
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
+
+  SessionOptions options = Options(cluster->targets()[0], 1);
+  options.config.mutable_experimental()->set_disable_output_partition_graphs(
+      true);
+
+  std::unique_ptr<Session> session(NewRemote(options));
+  ASSERT_TRUE(session != nullptr);
+
+  TF_ASSERT_OK(session->Create(graph));
+  {
+    // Just run to target node.
+    TF_ASSERT_OK(session->Run({}, {}, {node_names[2]}, nullptr));
+  }
+  {
+    // Attempting to get the partition graphs should fail.
+    RunOptions run_options;
+    run_options.set_output_partition_graphs(true);
+    RunMetadata run_metadata;
+    absl::Status s = session->Run(run_options, {}, {}, {node_names[2]}, nullptr,
+                                  &run_metadata);
+    EXPECT_TRUE(errors::IsInvalidArgument(s));
+    EXPECT_TRUE(
+        absl::StrContains(s.message(), "disable_output_partition_graphs"));
+  }
+
+  TF_ASSERT_OK(session->Close());
 }
 
 // A = [3 2; -1 0]; x = rand(2, 1); We want to compute the largest
@@ -226,7 +396,7 @@ void FindMaxEigen(const string& target) {
 
   std::unique_ptr<Session> session(NewRemote(Options(target, 1)));
   ASSERT_TRUE(session != nullptr);
-  TF_CHECK_OK(session->Create(def));
+  TF_ASSERT_OK(session->Create(def));
 
   // Setup feeds and fetches.
   float lambda;
@@ -236,8 +406,8 @@ void FindMaxEigen(const string& target) {
 
   for (int i = 0; i < 25; ++i) {
     std::vector<Tensor> outputs;
-    TF_CHECK_OK(session->Run({{x->name(), feed_value}},
-                             {y->name(), y_normalized->name()}, {}, &outputs));
+    TF_ASSERT_OK(session->Run({{x->name(), feed_value}},
+                              {y->name(), y_normalized->name()}, {}, &outputs));
     const Tensor& y = outputs[0];
     const Tensor& y_normalized = outputs[1];
     // Print out lambda, x, and y.
@@ -255,7 +425,11 @@ void FindMaxEigen(const string& target) {
 
 TEST(FindMaxEigenTest, RemoteDevice) {
   std::unique_ptr<test::TestCluster> cluster;
-  test::TestCluster::MakeTestCluster(Devices(1, 0), 2, &cluster);
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
   FindMaxEigen(cluster->targets()[0]);
 }
 
@@ -269,9 +443,15 @@ void SetDevice(GraphDef* graph, const string& name, const string& dev) {
   LOG(FATAL) << "Name '" << name << "' not found.";
 }
 
-TEST(GrpcSessionTest, MultiDevices) {
+// TODO(b/32636929): This test fails 1/1000 times. Disable it while we
+// figure out why.
+TEST(GrpcSessionTest, DISABLED_MultiDevices) {
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 2, &cluster));
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
 
   Graph graph(OpRegistry::Global());
   const int kSize = 1048576;
@@ -305,13 +485,13 @@ TEST(GrpcSessionTest, MultiDevices) {
         std::unique_ptr<Session> session(
             NewRemote(Options(cluster->targets()[0], 1000)));
         ASSERT_TRUE(session != nullptr);
-        TF_CHECK_OK(session->Create(def));
+        TF_ASSERT_OK(session->Create(def));
         {
           std::vector<Tensor> outputs;
           RunOptions options;
           options.set_trace_level(RunOptions::FULL_TRACE);
           RunMetadata metadata;
-          TF_CHECK_OK(
+          TF_ASSERT_OK(
               session->Run(options, {}, {c->name()}, {}, &outputs, &metadata));
           ASSERT_EQ(1, outputs.size());
           IsSingleFloatValue(outputs[0], 6.0 * kSize);
@@ -332,7 +512,7 @@ TEST(GrpcSessionTest, MultiDevices) {
           }
           ASSERT_TRUE(c_placed_correctly);
         }
-        TF_CHECK_OK(session->Close());
+        TF_ASSERT_OK(session->Close());
       }
     }
   }
@@ -340,7 +520,11 @@ TEST(GrpcSessionTest, MultiDevices) {
 
 TEST(GrpcSessionTest, LargeTensorSend) {
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 2, &cluster));
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
 
   Graph graph(OpRegistry::Global());
 
@@ -376,19 +560,23 @@ TEST(GrpcSessionTest, LargeTensorSend) {
   std::unique_ptr<Session> session(
       NewRemote(Options(cluster->targets()[0], 1000)));
   ASSERT_TRUE(session != nullptr);
-  TF_CHECK_OK(session->Create(def));
+  TF_ASSERT_OK(session->Create(def));
   {
     std::vector<Tensor> outputs;
-    TF_CHECK_OK(session->Run({}, {max_node->name()}, {}, &outputs));
+    TF_ASSERT_OK(session->Run({}, {max_node->name()}, {}, &outputs));
     ASSERT_EQ(1, outputs.size());
     IsSingleFloatValue(outputs[0], 1.0);
   }
-  TF_CHECK_OK(session->Close());
+  TF_ASSERT_OK(session->Close());
 }
 
 TEST(GrpcSessionTest, MultiDevices_String) {
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 1), 2, &cluster));
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 1))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
   std::unique_ptr<Session> session(
       NewRemote(Options(cluster->targets()[0], 1000)));
   ASSERT_TRUE(session != nullptr);
@@ -397,7 +585,7 @@ TEST(GrpcSessionTest, MultiDevices_String) {
   Graph graph(OpRegistry::Global());
   Tensor a_tensor(DT_STRING, TensorShape({2, 2}));
   for (int i = 0; i < 4; ++i) {
-    a_tensor.flat<string>()(i) = "hello, world";
+    a_tensor.flat<tstring>()(i) = "hello, world";
   }
   Node* a = test::graph::Constant(&graph, a_tensor);
   Node* b = test::graph::Identity(&graph, a);
@@ -413,17 +601,17 @@ TEST(GrpcSessionTest, MultiDevices_String) {
       SetDevice(&def, a->name(), a_dev.name());
       SetDevice(&def, b->name(), b_dev.name());
 
-      Status s = session->Create(def);
+      absl::Status s = session->Create(def);
       if (s.ok()) {
         std::vector<Tensor> outputs;
-        TF_CHECK_OK(session->Run({}, {b->name()}, {}, &outputs));
+        TF_ASSERT_OK(session->Run({}, {b->name()}, {}, &outputs));
         ASSERT_EQ(1, outputs.size());
         ASSERT_EQ(outputs[0].dtype(), DT_STRING);
         ASSERT_EQ(outputs[0].NumElements(), 4);
         for (int i = 0; i < outputs[0].NumElements(); ++i) {
-          EXPECT_EQ(outputs[0].flat<string>()(i), "hello, world");
+          EXPECT_EQ(outputs[0].flat<tstring>()(i), "hello, world");
         }
-        TF_CHECK_OK(session->Close());
+        TF_ASSERT_OK(session->Close());
       } else {
         LOG(ERROR) << "Error: " << s;
         ASSERT_TRUE((a_dev.device_type() == DEVICE_GPU) ||
@@ -436,7 +624,11 @@ TEST(GrpcSessionTest, MultiDevices_String) {
 
 TEST(GrpcSessionTest, SendRecv_Node_Naming) {
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 3, &cluster));
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/3}}),
+      &cluster));
   std::unique_ptr<Session> session(
       NewRemote(Options(cluster->targets()[0], 1)));
   ASSERT_TRUE(session != nullptr);
@@ -466,12 +658,12 @@ TEST(GrpcSessionTest, SendRecv_Node_Naming) {
   SetDevice(&def, a->name(), src.name());
   SetDevice(&def, b->name(), dst0.name());
   SetDevice(&def, c->name(), dst1.name());
-  TF_CHECK_OK(session->Create(def));
+  TF_ASSERT_OK(session->Create(def));
 
   // Run subgraph a -> b, and fetch b.
   {
     std::vector<Tensor> outputs;
-    TF_CHECK_OK(session->Run({}, {b->name()}, {}, &outputs));
+    TF_ASSERT_OK(session->Run({}, {b->name()}, {}, &outputs));
     ASSERT_EQ(1, outputs.size());
     IsSingleFloatValue(outputs[0], 100);
   }
@@ -479,18 +671,22 @@ TEST(GrpcSessionTest, SendRecv_Node_Naming) {
   // Run subgraph a -> c, and fetch c.
   {
     std::vector<Tensor> outputs;
-    TF_CHECK_OK(session->Run({}, {c->name()}, {}, &outputs));
+    TF_ASSERT_OK(session->Run({}, {c->name()}, {}, &outputs));
     ASSERT_EQ(1, outputs.size());
     IsSingleFloatValue(outputs[0], 100);
   }
 
-  TF_CHECK_OK(session->Close());
+  TF_ASSERT_OK(session->Close());
 }
 
 TEST(GrpcSessionTest, Error) {
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 2, &cluster));
-  const string& master = cluster->targets()[0];
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
+  auto master = cluster->targets()[0];
   const string& dev_a = cluster->devices()[0].name();
   const string& dev_b = cluster->devices()[1].name();
   LOG(INFO) << "master " << master << "dev_a " << dev_a << "dev_b " << dev_b;
@@ -515,7 +711,7 @@ TEST(GrpcSessionTest, Error) {
     //
     // Subgraph for "b" sleeps at the node "b_delay". When the sleep
     // finishes, the subgraph "b" will continue execution till it
-    // notices that it is cancelled. Meanwhile, subgraph's executor
+    // notices that it is canceled. Meanwhile, subgraph's executor
     // and its related state (registered ops) should still be alive.
     auto b = test::graph::Constant(&g, Tensor());
     b->set_assigned_device_name(dev_b);
@@ -529,15 +725,142 @@ TEST(GrpcSessionTest, Error) {
   std::unique_ptr<Session> session(NewRemote(Options(master, 1)));
   ASSERT_TRUE(session != nullptr);
 
-  TF_CHECK_OK(session->Create(gdef));
+  TF_ASSERT_OK(session->Create(gdef));
   {
-    Status status = session->Run({}, fetches, {}, nullptr);
+    absl::Status status = session->Run({}, fetches, {}, nullptr);
     EXPECT_FALSE(status.ok());
     EXPECT_NE(status.ToString().find("fantasia!"), string::npos);
   }
   // session->Close() shall clean up all states related to the session->
   // E.g., deregisters subgraph with workers, etc.
-  TF_CHECK_OK(session->Close());
+  TF_ASSERT_OK(session->Close());
+
+  // Sleep a bit so that most of asynchronous works finishes before
+  // the test process finishes.
+  Env::Default()->SleepForMicroseconds(2000000);
+}
+
+TEST(GrpcSessionTest, ErrorStatusLog) {
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
+  auto master = cluster->targets()[0];
+  const string& dev_a = cluster->devices()[0].name();
+  const string& dev_b = cluster->devices()[1].name();
+  LOG(INFO) << "master " << master << "dev_a " << dev_a << "dev_b " << dev_b;
+  GraphDef gdef;
+  std::vector<string> fetches;
+  {
+    Graph g(OpRegistry::Global());
+
+    // a2 = a + error(a)
+    //
+    // Subgraph for "a" fails. The master will cancel the subgraph for
+    // "b" and then returns the Session::Run.
+    auto a = test::graph::Constant(&g, Tensor());
+    a->set_assigned_device_name(dev_a);
+    auto a_err = test::graph::Error(&g, a, "fantasia!", true);
+    a_err->set_assigned_device_name(dev_a);
+    auto a2 = test::graph::Add(&g, a, a_err);
+    a2->set_assigned_device_name(dev_a);
+    fetches.push_back(a2->name());
+
+    // b2 = b + delay(b)
+    //
+    // Subgraph for "b" sleeps at the node "b_delay". When the sleep
+    // finishes, the subgraph "b" will continue execution till it
+    // notices that it is canceled. Meanwhile, subgraph's executor
+    // and its related state (registered ops) should still be alive.
+    auto b = test::graph::Constant(&g, Tensor());
+    b->set_assigned_device_name(dev_b);
+    auto b_delay = test::graph::Delay(&g, b, Microseconds(1000000));
+    b_delay->set_assigned_device_name(dev_b);
+    auto b2 = test::graph::Add(&g, b, b_delay);
+    b2->set_assigned_device_name(dev_b);
+    fetches.push_back(b2->name());
+    g.ToGraphDef(&gdef);
+  }
+  std::unique_ptr<Session> session(NewRemote(Options(master, 1)));
+  ASSERT_TRUE(session != nullptr);
+
+  TF_ASSERT_OK(session->Create(gdef));
+  {
+    absl::Status status = session->Run({}, fetches, {}, nullptr);
+    EXPECT_FALSE(status.ok());
+    std::cerr << status << "\n";
+    EXPECT_NE(status.ToString().find("fantasia!"), string::npos);
+    EXPECT_NE(status.ToString().find("ErrorOp: fantasia!"), string::npos);
+  }
+  // session->Close() shall clean up all states related to the session->
+  // E.g., deregisters subgraph with workers, etc.
+  TF_ASSERT_OK(session->Close());
+
+  // Sleep a bit so that most of asynchronous works finishes before
+  // the test process finishes.
+  Env::Default()->SleepForMicroseconds(2000000);
+}
+
+TEST(GrpcSessionTest, LongErrorMessage) {
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
+  auto master = cluster->targets()[0];
+  const string& dev_a = cluster->devices()[0].name();
+  const string& dev_b = cluster->devices()[1].name();
+  LOG(INFO) << "master " << master << "dev_a " << dev_a << "dev_b " << dev_b;
+  GraphDef gdef;
+  std::vector<string> fetches;
+  {
+    Graph g(OpRegistry::Global());
+
+    // a2 = a + error(a)
+    //
+    // Subgraph for "a" fails. The master will cancel the subgraph for
+    // "b" and then returns the Session::Run.
+    auto a = test::graph::Constant(&g, Tensor());
+    a->set_assigned_device_name(dev_a);
+    std::vector<char> long_string_buffer(1024 * 1024, 'x');
+    absl::string_view long_string(long_string_buffer.data(), 1024 * 1024);
+    string name = strings::StrCat(long_string, "fantasia!");
+    auto a_err = test::graph::Error(&g, a, name);
+    a_err->set_assigned_device_name(dev_a);
+    auto a2 = test::graph::Add(&g, a, a_err);
+    a2->set_assigned_device_name(dev_a);
+    fetches.push_back(a2->name());
+
+    // b2 = b + delay(b)
+    //
+    // Subgraph for "b" sleeps at the node "b_delay". When the sleep
+    // finishes, the subgraph "b" will continue execution till it
+    // notices that it is canceled. Meanwhile, subgraph's executor
+    // and its related state (registered ops) should still be alive.
+    auto b = test::graph::Constant(&g, Tensor());
+    b->set_assigned_device_name(dev_b);
+    auto b_delay = test::graph::Delay(&g, b, Microseconds(1000000));
+    b_delay->set_assigned_device_name(dev_b);
+    auto b2 = test::graph::Add(&g, b, b_delay);
+    b2->set_assigned_device_name(dev_b);
+    fetches.push_back(b2->name());
+    test::graph::ToGraphDef(&g, &gdef);
+  }
+  std::unique_ptr<Session> session(NewRemote(Options(master, 1)));
+  ASSERT_TRUE(session != nullptr);
+
+  TF_ASSERT_OK(session->Create(gdef));
+  {
+    absl::Status status = session->Run({}, fetches, {}, nullptr);
+    EXPECT_FALSE(status.ok());
+    EXPECT_NE(status.ToString().find("fantasia!"), string::npos);
+  }
+  // session->Close() shall clean up all states related to the session->
+  // E.g., deregisters subgraph with workers, etc.
+  TF_ASSERT_OK(session->Close());
 
   // Sleep a bit so that most of asynchronous works finishes before
   // the test process finishes.
@@ -546,7 +869,11 @@ TEST(GrpcSessionTest, Error) {
 
 TEST(SessionTest, SharedVar) {
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 1, &cluster));
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/1}}),
+      &cluster));
   const string master = cluster->targets()[0];
   CHECK_EQ(cluster->devices().size(), 1);
 
@@ -571,10 +898,10 @@ TEST(SessionTest, SharedVar) {
   // Init a variable
   {
     Session* sess = NewRemote(Options(master, 1));
-    TF_CHECK_OK(sess->Create(gdef));
+    TF_ASSERT_OK(sess->Create(gdef));
     std::vector<std::pair<string, Tensor>> inp;
-    TF_CHECK_OK(sess->Run(inp, {}, {init_name}, nullptr));
-    TF_CHECK_OK(sess->Close());
+    TF_ASSERT_OK(sess->Run(inp, {}, {init_name}, nullptr));
+    TF_ASSERT_OK(sess->Close());
     delete sess;
   }
 
@@ -582,26 +909,104 @@ TEST(SessionTest, SharedVar) {
     // Update a variable
     {
       Session* sess = NewRemote(Options(master, 1));
-      TF_CHECK_OK(sess->Create(gdef));
+      TF_ASSERT_OK(sess->Create(gdef));
       std::vector<std::pair<string, Tensor>> inp;
-      TF_CHECK_OK(sess->Run(inp, {}, {inc_name}, nullptr));
-      TF_CHECK_OK(sess->Close());
+      TF_ASSERT_OK(sess->Run(inp, {}, {inc_name}, nullptr));
+      TF_ASSERT_OK(sess->Close());
       delete sess;
     }
 
     // Gets the variable's value.
     {
       Session* sess = NewRemote(Options(master, 1));
-      TF_CHECK_OK(sess->Create(gdef));
+      TF_ASSERT_OK(sess->Create(gdef));
       std::vector<std::pair<string, Tensor>> inp;
       std::vector<Tensor> ret;
-      TF_CHECK_OK(sess->Run(inp, {get_name}, {}, &ret));
+      TF_ASSERT_OK(sess->Run(inp, {get_name}, {}, &ret));
       ASSERT_EQ(ret.size(), 1);
       EXPECT_EQ(ret[0].scalar<float>()(), 1.0 * (1 + rep));
-      TF_CHECK_OK(sess->Close());
+      TF_ASSERT_OK(sess->Close());
       delete sess;
     }
   }
+}
+
+TEST(SessionTest, SharedVarWithMultipleLearnerReplicas) {
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"variable_server", /*num_tasks=*/1},
+                 TestJob{"learner", /*num_tasks=*/2, /*num_replicas=*/2}}),
+      &cluster));
+  for (const auto& device : cluster->devices()) {
+    LOG(INFO) << device.DebugString();
+  }
+
+  ASSERT_EQ(cluster->devices().size(), 3);
+
+  GraphDef gdef;
+  string init_name;
+  string inc_name;
+  string get_name;
+
+  std::string var_server_device = "/job:variable_server/replica:0/task:0";
+  std::string learner_0_device = "/job:learner/replica:0/task:0";
+  std::string learner_1_device = "/job:learner/replica:1/task:0";
+
+  LOG(INFO) << "Learners: " << absl::StrJoin(cluster->targets("learner"), "; ");
+  {
+    Graph g(OpRegistry::Global());
+    Tensor one(DT_FLOAT, TensorShape({}));
+    one.scalar<float>()() = 1.0;
+    Node* var = test::graph::Var(&g, DT_FLOAT, one.shape());
+    var->mutable_def()->set_device(var_server_device);
+    Node* init = test::graph::Assign(&g, var, test::graph::Constant(&g, one));
+    init_name = init->name();
+    Node* update = test::graph::Assign(
+        &g, var, test::graph::Add(&g, var, test::graph::Constant(&g, one)));
+    inc_name = update->name();
+    get_name = var->name();
+    test::graph::ToGraphDef(&g, &gdef);
+  }
+
+  // Initialize using learner 0, then learner 1. Each session should remain
+  // valid.
+  Session* learner0 = NewRemote(Options(cluster->targets("learner")[0], 1));
+
+  {
+    TF_ASSERT_OK(learner0->Create(gdef));
+    std::vector<std::pair<string, Tensor>> inp;
+    TF_ASSERT_OK(learner0->Run(inp, {}, {init_name}, nullptr));
+  }
+
+  // Increment with learner 0
+  for (int rep = 1; rep < 10; ++rep) {
+    std::vector<std::pair<string, Tensor>> inp;
+    TF_ASSERT_OK(learner0->Run(inp, {}, {inc_name}, nullptr));
+  }
+
+  Session* learner1 = NewRemote(Options(cluster->targets("learner")[1], 1));
+  TF_ASSERT_OK(learner1->Create(gdef));
+  // Increment with learner 1
+  for (int rep = 1; rep < 10; ++rep) {
+    std::vector<std::pair<string, Tensor>> inp;
+    TF_ASSERT_OK(learner1->Run(inp, {}, {inc_name}, nullptr));
+  }
+
+  // Fetch results with both and validate they are the same.
+  std::vector<std::pair<string, Tensor>> inp;
+  std::vector<Tensor> ret;
+  TF_ASSERT_OK(learner0->Run(inp, {get_name}, {}, &ret));
+  ASSERT_EQ(ret.size(), 1);
+  EXPECT_EQ(ret[0].scalar<float>()(), 1.0 * 19);
+
+  TF_ASSERT_OK(learner1->Run(inp, {get_name}, {}, &ret));
+  ASSERT_EQ(ret.size(), 1);
+  EXPECT_EQ(ret[0].scalar<float>()(), 1.0 * 19);
+
+  TF_ASSERT_OK(learner0->Close());
+  TF_ASSERT_OK(learner1->Close());
 }
 
 void CreateInvalidGraph(const string& graph_def_ascii,
@@ -610,14 +1015,18 @@ void CreateInvalidGraph(const string& graph_def_ascii,
   CHECK(protobuf::TextFormat::ParseFromString(graph_def_ascii, &graph));
 
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 2, &cluster));
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
 
   std::unique_ptr<Session> session(
       NewRemote(Options(cluster->targets()[0], 1)));
-  Status s = session->Create(graph);
+  absl::Status s = session->Create(graph);
 
   ASSERT_FALSE(s.ok());
-  EXPECT_NE(s.error_message().find(error_substring), string::npos);
+  EXPECT_NE(s.message().find(error_substring), string::npos);
 }
 
 TEST(SessionTest, InvalidOpName) {
@@ -673,7 +1082,6 @@ TEST(SessionTest, InvalidOpInputName) {
       attr { key: 'T' value { type: DT_FLOAT } }
       attr { key: 'transpose_a' value { b: false } }
       attr { key: 'transpose_b' value { b: false } }
-      attr { key: '_kernel' value { s: 'eigen' } }
     }
   )",
                      "Illegal op input name");
@@ -692,7 +1100,6 @@ TEST(SessionTest, InvalidOpInputName) {
       attr { key: 'T' value { type: DT_FLOAT } }
       attr { key: 'transpose_a' value { b: false } }
       attr { key: 'transpose_b' value { b: false } }
-      attr { key: '_kernel' value { s: 'eigen' } }
     }
   )",
                      "Illegal op input name");
@@ -711,7 +1118,6 @@ TEST(SessionTest, InvalidOpInputName) {
       attr { key: 'T' value { type: DT_FLOAT } }
       attr { key: 'transpose_a' value { b: false } }
       attr { key: 'transpose_b' value { b: false } }
-      attr { key: '_kernel' value { s: 'eigen' } }
     }
   )",
                      "Illegal op input name");
@@ -730,7 +1136,6 @@ TEST(SessionTest, InvalidOpInputName) {
       attr { key: 'T' value { type: DT_FLOAT } }
       attr { key: 'transpose_a' value { b: false } }
       attr { key: 'transpose_b' value { b: false } }
-      attr { key: '_kernel' value { s: 'eigen' } }
     }
   )",
                      "Illegal op input name");
@@ -754,11 +1159,15 @@ TEST(SessionTest, ExtendValidation) {
   ASSERT_TRUE(success);
 
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 2, &cluster));
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
 
   std::unique_ptr<Session> session(
       NewRemote(Options(cluster->targets()[0], 1)));
-  TF_CHECK_OK(session->Create(graph));
+  TF_ASSERT_OK(session->Create(graph));
 
   // 1. Fail with an unknown input name.
   GraphDef extension;
@@ -768,15 +1177,14 @@ TEST(SessionTest, ExtendValidation) {
       attr { key: 'T' value { type: DT_FLOAT } }
       attr { key: 'transpose_a' value { b: false } }
       attr { key: 'transpose_b' value { b: false } }
-      attr { key: '_kernel' value { s: 'eigen' } }
     }
   )",
                                                   &extension);
   ASSERT_TRUE(success);
 
-  Status s = session->Extend(extension);
+  absl::Status s = session->Extend(extension);
   ASSERT_FALSE(s.ok());
-  EXPECT_NE(s.error_message().find("Illegal op input name"), string::npos);
+  EXPECT_NE(s.message().find("Illegal op input name"), string::npos);
 
   // 2. Succeed with a valid node.
   success = protobuf::TextFormat::ParseFromString(R"(
@@ -785,12 +1193,11 @@ TEST(SessionTest, ExtendValidation) {
       attr { key: 'T' value { type: DT_FLOAT } }
       attr { key: 'transpose_a' value { b: false } }
       attr { key: 'transpose_b' value { b: false } }
-      attr { key: '_kernel' value { s: 'eigen' } }
     }
   )",
                                                   &extension);
   ASSERT_TRUE(success);
-  TF_CHECK_OK(session->Extend(extension));
+  TF_ASSERT_OK(session->Extend(extension));
 
   // 2. Fail with a duplicate node.
   success = protobuf::TextFormat::ParseFromString(R"(
@@ -799,20 +1206,19 @@ TEST(SessionTest, ExtendValidation) {
       attr { key: 'T' value { type: DT_FLOAT } }
       attr { key: 'transpose_a' value { b: false } }
       attr { key: 'transpose_b' value { b: false } }
-      attr { key: '_kernel' value { s: 'eigen' } }
     }
   )",
                                                   &extension);
   ASSERT_TRUE(success);
   s = session->Extend(extension);
   ASSERT_FALSE(s.ok());
-  EXPECT_NE(s.error_message().find("'b', which was created by a previous call"),
+  EXPECT_NE(s.message().find("'b', which was created by a previous call"),
             string::npos);
 }
 // Tests that Create() with "operation_timeout_in_ms" set times out.
 TEST(SessionTest, CreateTimeoutWithSessionOptions) {
   // Creates a RemoteSession with "operation_timeout_in_ms" set to 100.
-  SessionOptions options = Options("example.org", 1);
+  SessionOptions options = Options("example.org:2222", 1);
   options.config.set_operation_timeout_in_ms(100);
   std::unique_ptr<Session> session(NewRemote(options));
 
@@ -822,7 +1228,7 @@ TEST(SessionTest, CreateTimeoutWithSessionOptions) {
   test::graph::Delay(&graph, b, Microseconds(1000000));
   GraphDef gdef;
   test::graph::ToGraphDef(&graph, &gdef);
-  Status status = session->Create(gdef);
+  absl::Status status = session->Create(gdef);
   // Either error is possible, depending on the environment.
   EXPECT_TRUE(error::DEADLINE_EXCEEDED == status.code() ||
               error::UNAVAILABLE == status.code());
@@ -830,7 +1236,7 @@ TEST(SessionTest, CreateTimeoutWithSessionOptions) {
 
 // Tests that Create() with "timeout_in_ms" in RunOptions set times out.
 TEST(SessionTest, CreateTimeoutWithRunOptions) {
-  SessionOptions options = Options("example.org", 1);
+  SessionOptions options = Options("example.org:2222", 1);
   std::unique_ptr<Session> session(NewRemote(options));
 
   // Creates a long running op.
@@ -842,7 +1248,7 @@ TEST(SessionTest, CreateTimeoutWithRunOptions) {
   RunOptions run_options;
   // Sets RunOption timeout_in_ms to 20.
   run_options.set_timeout_in_ms(20);
-  Status status = session->Create(run_options, gdef);
+  absl::Status status = session->Create(run_options, gdef);
   // Either error is possible, depending on the environment.
   EXPECT_TRUE(error::DEADLINE_EXCEEDED == status.code() ||
               error::UNAVAILABLE == status.code());
@@ -852,7 +1258,11 @@ TEST(SessionTest, CreateTimeoutWithRunOptions) {
 TEST(SessionTest, RunTimeoutWithSessionOptions) {
   // Creates a RemoteSession with "operation_timeout_in_ms" set to 100.
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 1, &cluster));
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/1}}),
+      &cluster));
   SessionOptions options = Options(cluster->targets()[0], 100);
   options.config.set_operation_timeout_in_ms(1);
   std::unique_ptr<Session> session(NewRemote(options));
@@ -864,11 +1274,11 @@ TEST(SessionTest, RunTimeoutWithSessionOptions) {
   GraphDef gdef;
   test::graph::ToGraphDef(&graph, &gdef);
   RunOptions run_options;
-  TF_CHECK_OK(session->Create(run_options, gdef));
+  TF_ASSERT_OK(session->Create(run_options, gdef));
 
   // Verifies that Run() times out, and the error code is DEADLINE_EXCEEDED.
   std::vector<std::pair<string, Tensor>> inputs;
-  Status status = session->Run(inputs, {}, {b_delay->name()}, nullptr);
+  absl::Status status = session->Run(inputs, {}, {b_delay->name()}, nullptr);
   // TODO(sherrym): Due to potentially a GRPC bug, we sometimes get
   // GRPC_CHTTP2_INTERNAL_ERROR which is mapped to error::INTERNAL.
   EXPECT_TRUE(error::DEADLINE_EXCEEDED == status.code() ||
@@ -878,7 +1288,11 @@ TEST(SessionTest, RunTimeoutWithSessionOptions) {
 // Tests that Run() with "timeout_in_ms" set times out.
 TEST(SessionTest, RunTimeoutWithRunOptions) {
   std::unique_ptr<test::TestCluster> cluster;
-  TF_CHECK_OK(test::TestCluster::MakeTestCluster(Devices(1, 0), 1, &cluster));
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/1}}),
+      &cluster));
   SessionOptions options = Options(cluster->targets()[0], 1);
   std::unique_ptr<Session> session(NewRemote(options));
 
@@ -888,18 +1302,409 @@ TEST(SessionTest, RunTimeoutWithRunOptions) {
   Node* b_delay = test::graph::Delay(&graph, b, Microseconds(1000000));
   GraphDef gdef;
   test::graph::ToGraphDef(&graph, &gdef);
-  TF_CHECK_OK(session->Create(gdef));
+  TF_ASSERT_OK(session->Create(gdef));
 
   // Verifies that Run() times out, and the error code is DEADLINE_EXCEEDED.
   std::vector<std::pair<string, Tensor>> inputs;
   RunOptions run_options;
   run_options.set_timeout_in_ms(100);
-  Status status = session->Run(run_options, inputs, {}, {b_delay->name()},
-                               nullptr, nullptr);
+  absl::Status status = session->Run(run_options, inputs, {}, {b_delay->name()},
+                                     nullptr, nullptr);
   // TODO(sherrym): Due to potentially a GRPC bug, we sometimes get
   // GRPC_CHTTP2_INTERNAL_ERROR which is mapped to error::INTERNAL.
   EXPECT_TRUE(error::DEADLINE_EXCEEDED == status.code() ||
               error::INTERNAL == status.code());
+}
+
+TEST(SessionTest, TestCompression) {
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/1}}),
+      &cluster));
+  SessionOptions options = Options(cluster->targets()[0], 100);
+  RPCOptions* rpc_options = options.config.mutable_rpc_options();
+  rpc_options->set_compression_algorithm("deflate");
+  rpc_options->set_compression_level(GRPC_COMPRESS_LEVEL_HIGH);
+
+  std::unique_ptr<Session> session(NewRemote(options));
+
+  static const float kTestValue = 409.1934f;
+  Graph graph(OpRegistry::Global());
+  Tensor tensor(DT_FLOAT, TensorShape({1, 1}));
+  tensor.flat<float>()(0) = kTestValue;
+  Node* b = test::graph::Constant(&graph, tensor);
+  GraphDef gdef;
+  graph.ToGraphDef(&gdef);
+  RunOptions run_options;
+  TF_ASSERT_OK(session->Create(run_options, gdef));
+
+  std::vector<std::pair<string, Tensor>> inputs;
+  std::vector<Tensor> outputs;
+  TF_ASSERT_OK(session->Run(inputs, {b->name()}, {}, &outputs));
+  ASSERT_EQ(1, outputs.size());
+  IsSingleFloatValue(outputs[0], kTestValue);
+}
+
+TEST(GrpcSessionTest, ErrorAggregationTwoWorkersTwoErrors) {
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(1, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
+  auto& devs = cluster->devices();
+  auto master = cluster->targets()[0];
+  // worker 1
+  const string w1_dev1 = devs[0].name();
+  // worker 2
+  const string w2_dev1 = devs[1].name();
+
+  LOG(INFO) << "master " << master << "w1_dev1 " << w1_dev1 << " w2_dev1 "
+            << w2_dev1;
+  GraphDef gdef;
+  std::vector<string> fetches;
+  {
+    // Set up a graph to test the error handling when two workers both reports
+    // original errors. The expected behavior is:
+    //   1. The master issues a cancel operation upon receiving the first error.
+    //   2. The master may receive one or both errors depending on the timing
+    //      of the cancel operation.
+    //
+    // Set up:
+    // Set up two workers. Both worker reports error the master without any
+    // delay.
+    Graph g(OpRegistry::Global());
+
+    // Worker 1. a_err runs on w1_dev1 and a_delay runs on w2_dev2.
+    auto a = test::graph::Constant(&g, Tensor(1));
+    a->set_assigned_device_name(w1_dev1);
+
+    auto a_err = test::graph::Error(&g, a, "fantasia1!");
+    a_err->set_assigned_device_name(w1_dev1);
+
+    fetches.push_back(a_err->name());
+
+    // Worker 2. b2 depends on a_err and detects the error via the rendezvous
+    // from worker 1.
+    auto b = test::graph::Constant(&g, Tensor(1));
+    b->set_assigned_device_name(w2_dev1);
+
+    auto b_err = test::graph::Error(&g, b, "fantasia2!");
+    b_err->set_assigned_device_name(w2_dev1);
+
+    fetches.push_back(b_err->name());
+
+    g.ToGraphDef(&gdef);
+  }
+
+  std::unique_ptr<Session> session(NewRemote(Options(master, 1)));
+  ASSERT_TRUE(session != nullptr);
+
+  TF_ASSERT_OK(session->Create(gdef));
+  {
+    std::vector<Tensor> outputs;
+    absl::Status status = session->Run({}, fetches, {}, &outputs);
+    LOG(INFO) << status;
+    EXPECT_FALSE(status.ok());
+    // Status contains the error either worker1 or worker2.
+    EXPECT_NE(status.ToString().find("fantasia"), string::npos);
+    EXPECT_EQ(status.code(), error::Code::INTERNAL);
+  }
+  // session->Close() shall clean up all states related to the session->
+  // E.g., deregisters subgraph with workers, etc.
+  TF_ASSERT_OK(session->Close());
+
+  // Sleep a bit so that most of asynchronous works finishes before
+  // the test process finishes.
+  Env::Default()->SleepForMicroseconds(2000000);
+}
+
+TEST(GrpcSessionTest, ErrorAggregationTwoWorkerRace) {
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(2, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/2}}),
+      &cluster));
+  auto& devs = cluster->devices();
+  auto master = cluster->targets()[0];
+  // worker 1
+  const string w1_dev1 = devs[0].name();
+  const string w1_dev2 = devs[1].name();
+  // worker 2
+  const string w2_dev1 = devs[2].name();
+
+  LOG(INFO) << "master " << master << "w1_dev1 " << w1_dev1 << " w1_dev2 "
+            << w1_dev2 << " w2_dev1 " << w2_dev1;
+  GraphDef gdef;
+  std::vector<string> fetches;
+  std::vector<string> targets;
+  {
+    // Set up a graph to test the error handling when a derived error is
+    // reported to master before the original error. The expected behavior is:
+    //    1. the original error will be received by the master and reported
+    //       to the user as the error status.
+    //
+    // Setup:
+    //
+    // Worker 1 generates the original error but it delays for 5 seconds before
+    // reporting to master. Worker 2 detects the error (via Rendezvous) and
+    // reports to the master before worker 1.
+    Graph g(OpRegistry::Global());
+
+    // Worker 1. a_err runs on w1_dev1 and a_delay runs on w2_dev2.
+    auto a = test::graph::Constant(&g, Tensor(1));
+    a->set_assigned_device_name(w1_dev1);
+
+    auto a_err = test::graph::Error(&g, a, "fantasia!");
+    a_err->set_assigned_device_name(w1_dev1);
+
+    auto a_delay = test::graph::Delay(&g, a, Microseconds(5000000));
+    a_delay->set_assigned_device_name(w1_dev2);
+
+    // We need to put a_delay in targets instead of fetches. Putting
+    // a_delay in fetches will cause the executor for w1_dev2 to report failure
+    // status as well as the Rendezvous is already poisoned by the a_err op in
+    // w1_dev1.
+    targets.push_back(a_delay->name());
+    fetches.push_back(a_err->name());
+
+    // Worker 2. b2 depends on a_err and detects the error via the rendezvous
+    // from worker 1.
+    auto b = test::graph::Constant(&g, Tensor(3));
+    b->set_assigned_device_name(w2_dev1);
+    auto b2 = test::graph::Add(&g, b, a_err);
+    b2->set_assigned_device_name(w2_dev1);
+    fetches.push_back(b2->name());
+
+    g.ToGraphDef(&gdef);
+  }
+
+  std::unique_ptr<Session> session(NewRemote(Options(master, 1)));
+  ASSERT_TRUE(session != nullptr);
+
+  TF_ASSERT_OK(session->Create(gdef));
+  {
+    std::vector<Tensor> outputs;
+    absl::Status status = session->Run({}, fetches, targets, &outputs);
+    LOG(INFO) << status;
+    EXPECT_FALSE(status.ok());
+    // assert status contains the root error
+    EXPECT_NE(status.ToString().find("fantasia!"), string::npos);
+    // assert status does not contain cancelled error.
+    EXPECT_EQ(status.ToString().find("Cancelled"), string::npos);
+    EXPECT_EQ(status.code(), error::Code::INTERNAL);
+  }
+  // session->Close() shall clean up all states related to the session->
+  // E.g., deregisters subgraph with workers, etc.
+  TF_ASSERT_OK(session->Close());
+
+  // Sleep a bit so that most of asynchronous works finishes before
+  // the test process finishes.
+  Env::Default()->SleepForMicroseconds(2000000);
+}
+
+TEST(GrpcSessionTest, ErrorAggregationThreeWorkerRaceVariant1) {
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(2, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/3}}),
+      &cluster));
+  auto& devs = cluster->devices();
+  auto master = cluster->targets()[0];
+  // worker 1
+  const string w1_dev1 = devs[0].name();
+  const string w1_dev2 = devs[1].name();
+  // worker 2
+  const string w2_dev1 = devs[2].name();
+  // worker 3
+  const string w3_dev1 = devs[4].name();
+
+  LOG(INFO) << "master " << master << "w1_dev1 " << w1_dev1 << " w1_dev2 "
+            << w1_dev2 << " w2_dev1 " << w2_dev1 << " w3_dev1 " << w3_dev1;
+  GraphDef gdef;
+  std::vector<string> fetches;
+  std::vector<string> targets;
+  {
+    // Set up a graph to test the error handling when a derived error is
+    // reported to master before the original error and a third worker is
+    // canceled by the master. The expect behavior is that
+    //    1. the original error will be received by the master,
+    //    2. the canceled error will be treated as a derived error.
+    //
+    // Setup:
+    //
+    // Worker 1 generates the original error but it delays for 5 seconds before
+    // reporting to master. Worker 2 detects the error (via Rendezvous) and
+    // reports to the master before worker 1. Worker 3 runs a delay op and will
+    // be canceled by the master.
+    Graph g(OpRegistry::Global());
+
+    // Worker 1. a_err runs on w1_dev1 and a_delay runs on w2_dev2.
+    auto a = test::graph::Constant(&g, Tensor(1));
+    a->set_assigned_device_name(w1_dev1);
+
+    auto a_err = test::graph::Error(&g, a, "fantasia!");
+    a_err->set_assigned_device_name(w1_dev1);
+
+    auto a_delay = test::graph::Delay(&g, a, Microseconds(5000000));
+    a_delay->set_assigned_device_name(w1_dev2);
+
+    // Putting a_delay in fetches will cause the executor for w1_dev2 to report
+    // failure status as well due to the use of SendOp, as the Rendezvous is
+    // already poisoned by the a_err op in w1_dev1.
+    targets.push_back(a_delay->name());
+    fetches.push_back(a_err->name());
+
+    // Worker 2. b2 depends on a_err and detects the error via the rendezvous
+    // from worker 1.
+    auto b = test::graph::Constant(&g, Tensor(3));
+    b->set_assigned_device_name(w2_dev1);
+    auto b2 = test::graph::Add(&g, b, a_err);
+    b2->set_assigned_device_name(w2_dev1);
+    fetches.push_back(b2->name());
+
+    // Worker 3. Runs only a delay op. This worker will be cancelled by master
+    // when the master receives the root error from Worker 1.
+    auto c = test::graph::Constant(&g, Tensor(3));
+    c->set_assigned_device_name(w3_dev1);
+    auto c_delay = test::graph::Delay(&g, c, Microseconds(4000000));
+    c_delay->set_assigned_device_name(w3_dev1);
+
+    // Put c_delay in targets so that an implicit SendOp for c_delay to
+    // worker 1 is not generated.
+    targets.push_back(c_delay->name());
+
+    g.ToGraphDef(&gdef);
+  }
+
+  std::unique_ptr<Session> session(NewRemote(Options(master, 1)));
+  ASSERT_TRUE(session != nullptr);
+
+  TF_ASSERT_OK(session->Create(gdef));
+  {
+    std::vector<Tensor> outputs;
+    absl::Status status = session->Run({}, fetches, targets, &outputs);
+    LOG(INFO) << status;
+    EXPECT_FALSE(status.ok());
+    // assert status contains the root error
+    EXPECT_NE(status.ToString().find("fantasia!"), string::npos);
+    // assert status does not contain cancelled or aborted error.
+    EXPECT_EQ(status.ToString().find("Cancelled"), string::npos);
+    EXPECT_EQ(status.ToString().find("Aborted"), string::npos);
+    EXPECT_EQ(status.code(), error::Code::INTERNAL);
+  }
+  // session->Close() shall clean up all states related to the session->
+  // E.g., deregisters subgraph with workers, etc.
+  TF_ASSERT_OK(session->Close());
+
+  // Sleep a bit so that most of asynchronous works finishes before
+  // the test process finishes.
+  Env::Default()->SleepForMicroseconds(2000000);
+}
+
+TEST(GrpcSessionTest, ErrorAggregationThreeWorkerRaceVariant2) {
+  std::unique_ptr<test::TestCluster> cluster;
+  TF_ASSERT_OK(test::TestCluster::MakeTestCluster(
+      TestClusterConfig()
+          .Options(Devices(2, 0))
+          .Jobs({TestJob{"localhost", /*num_tasks=*/3}}),
+      &cluster));
+  auto& devs = cluster->devices();
+  auto master = cluster->targets()[0];
+  // worker 1
+  const string w1_dev1 = devs[0].name();
+  const string w1_dev2 = devs[1].name();
+  // worker 2
+  const string w2_dev1 = devs[2].name();
+  // worker 3
+  const string w3_dev1 = devs[4].name();
+
+  LOG(INFO) << "master " << master << "w1_dev1 " << w1_dev1 << " w1_dev2 "
+            << w1_dev2 << " w2_dev1 " << w2_dev1 << " w3_dev1 " << w3_dev1;
+  GraphDef gdef;
+  std::vector<string> fetches;
+  std::vector<string> targets;
+  {
+    // Set up a graph to test the error handling when a derived error is
+    // reported to master before the original error and a third worker is
+    // aborted from an implicit SendOp. The expect behavior is that
+    //    1. the original error will be received by the master,
+    //    2. the aborted error will be treated as a derived error.
+    //
+    // Setup:
+    //
+    // Worker 1 generates the original error but it delays for 5 seconds before
+    // reporting to master. Worker 2 detects the error (via Rendezvous) and
+    // reports to the master before worker 1. Worker 3 runs a delay op and an
+    // implicit SendOp (for sending tensor c_delay to Worker 1) and will be
+    // aborted by worker 1.
+    Graph g(OpRegistry::Global());
+
+    // Worker 1. a_err runs on w1_dev1 and a_delay runs on w2_dev2.
+    auto a = test::graph::Constant(&g, Tensor(1));
+    a->set_assigned_device_name(w1_dev1);
+
+    auto a_err = test::graph::Error(&g, a, "fantasia!");
+    a_err->set_assigned_device_name(w1_dev1);
+
+    auto a_delay = test::graph::Delay(&g, a, Microseconds(5000000));
+    a_delay->set_assigned_device_name(w1_dev2);
+
+    // Putting a_delay in fetches will cause the executor for w1_dev2 to report
+    // failure status as well due to the use of SendOp, as the Rendezvous is
+    // already poisoned by the a_err op in w1_dev1.
+    targets.push_back(a_delay->name());
+    fetches.push_back(a_err->name());
+
+    // Worker 2. b2 depends on a_err and detects the error via the rendezvous
+    // from worker 1.
+    auto b = test::graph::Constant(&g, Tensor(3));
+    b->set_assigned_device_name(w2_dev1);
+    auto b2 = test::graph::Add(&g, b, a_err);
+    b2->set_assigned_device_name(w2_dev1);
+    fetches.push_back(b2->name());
+
+    // Worker 3. Runs only a delay op. This worker will be cancelled by master
+    // when the master receives the root error from Worker 1.
+    auto c = test::graph::Constant(&g, Tensor(3));
+    c->set_assigned_device_name(w3_dev1);
+    auto c_delay = test::graph::Delay(&g, c, Microseconds(4000000));
+    c_delay->set_assigned_device_name(w3_dev1);
+
+    // Put c_delay in fetches so that an implicit SendOp for c_delay to worker 1
+    // is generated.
+    fetches.push_back(c_delay->name());
+
+    g.ToGraphDef(&gdef);
+  }
+
+  std::unique_ptr<Session> session(NewRemote(Options(master, 1)));
+  ASSERT_TRUE(session != nullptr);
+
+  TF_ASSERT_OK(session->Create(gdef));
+  {
+    std::vector<Tensor> outputs;
+    absl::Status status = session->Run({}, fetches, targets, &outputs);
+    LOG(INFO) << status;
+    EXPECT_FALSE(status.ok());
+    // assert status contains the root error
+    EXPECT_NE(status.ToString().find("fantasia!"), string::npos);
+    // assert status does not contain cancelled or aborted error.
+    EXPECT_EQ(status.ToString().find("Cancelled"), string::npos);
+    EXPECT_EQ(status.ToString().find("Aborted"), string::npos);
+    EXPECT_EQ(status.code(), error::Code::INTERNAL);
+  }
+  // session->Close() shall clean up all states related to the session->
+  // E.g., deregisters subgraph with workers, etc.
+  TF_ASSERT_OK(session->Close());
+
+  // Sleep a bit so that most of asynchronous works finishes before
+  // the test process finishes.
+  Env::Default()->SleepForMicroseconds(2000000);
 }
 
 }  // namespace tensorflow

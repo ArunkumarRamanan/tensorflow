@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_UTIL_MIRROR_PAD_MODE_H_
-#define TENSORFLOW_UTIL_MIRROR_PAD_MODE_H_
+#ifndef TENSORFLOW_CORE_UTIL_MIRROR_PAD_MODE_H_
+#define TENSORFLOW_CORE_UTIL_MIRROR_PAD_MODE_H_
 
 // This file contains helper routines to deal with padding in various ops and
 // kernels.
@@ -22,6 +22,7 @@ limitations under the License.
 #include <string>
 
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/lib/core/stringpiece.h"
 
 namespace tensorflow {
 
@@ -40,13 +41,13 @@ enum class MirrorPadMode {
 // used as an Attr() in REGISTER_OP.
 string GetMirrorPadModeAttrString();
 
-// Forward declaration to avoid including core/framework/graph.pb.h.
+// Forward declaration to avoid including core/framework/graph.proto.
 class NodeDef;
 
 // Specialization to parse an attribute directly into a MirrorPadMode enum.
-Status GetNodeAttr(const NodeDef& node_def, StringPiece attr_name,
-                   MirrorPadMode* value);
+absl::Status GetNodeAttr(const NodeDef& node_def, absl::string_view attr_name,
+                         MirrorPadMode* value);
 
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_UTIL_MIRROR_PAD_MODE_H_
+#endif  // TENSORFLOW_CORE_UTIL_MIRROR_PAD_MODE_H_

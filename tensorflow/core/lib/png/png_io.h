@@ -28,20 +28,22 @@ limitations under the License.
 // only when they're flat, though) or protocol buffer fields typed to either of
 // these can be decoded without copying the data into a C++ string.
 
-#ifndef TENSORFLOW_LIB_PNG_PNG_IO_H_
-#define TENSORFLOW_LIB_PNG_PNG_IO_H_
+#ifndef TENSORFLOW_CORE_LIB_PNG_PNG_IO_H_
+#define TENSORFLOW_CORE_LIB_PNG_PNG_IO_H_
 
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "tensorflow/core/lib/core/stringpiece.h"
+#include "absl/base/casts.h"
 #include "tensorflow/core/platform/png.h"
+#include "tensorflow/core/platform/stringpiece.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace png {
 
-// Handy container for decoding informations and struct pointers
+// Handy container for decoding information and struct pointers
 struct DecodeContext {
   const uint8* data;
   int data_left;
@@ -54,12 +56,12 @@ struct DecodeContext {
   int channels;
   bool need_to_synthesize_16;
   bool error_condition;
-  DecodeContext() : png_ptr(NULL), info_ptr(NULL) {}
+  DecodeContext() : png_ptr(nullptr), info_ptr(nullptr) {}
 };
 
-bool DecodeHeader(StringPiece png_string, int* width, int* height,
+bool DecodeHeader(absl::string_view png_string, int* width, int* height,
                   int* components, int* channel_bit_depth,
-                  std::vector<std::pair<string, string> >* metadata);
+                  std::vector<std::pair<std::string, std::string> >* metadata);
 
 // Sample usage for reading PNG:
 //
@@ -67,12 +69,12 @@ bool DecodeHeader(StringPiece png_string, int* width, int* height,
 // DecodeContext context;
 // CHECK(CommonInitDecode(png_string, 3 /*RGB*/, 8 /*uint8*/, &context));
 // char* image_buffer = new char[3*context.width*context.height];
-// CHECK(CommonFinishDecode(bit_cast<png_byte*>(image_buffer),
+// CHECK(CommonFinishDecode(absl::bit_cast<png_byte*>(image_buffer),
 //       3*context.width /*stride*/, &context));
 //
 // desired_channels may be 0 to detected it from the input.
 
-bool CommonInitDecode(StringPiece png_string, int desired_channels,
+bool CommonInitDecode(absl::string_view png_string, int desired_channels,
                       int desired_channel_bits, DecodeContext* context);
 
 bool CommonFinishDecode(png_bytep data, int row_bytes, DecodeContext* context);
@@ -92,12 +94,23 @@ void CommonFreeDecode(DecodeContext* context);
 // compression is in [-1,9], where 0 is fast and weak compression, 9 is slow
 // and strong, and -1 is the zlib default.
 
+template <typename T>
 bool WriteImageToBuffer(
     const void* image, int width, int height, int row_bytes, int num_channels,
-    int channel_bits, int compression, string* png_string,
-    const std::vector<std::pair<string, string> >* metadata);
+    int channel_bits, int compression, T* png_string,
+    const std::vector<std::pair<std::string, std::string> >* metadata);
+
+// Explicit instantiations defined in png_io.cc.
+extern template bool WriteImageToBuffer<std::string>(
+    const void* image, int width, int height, int row_bytes, int num_channels,
+    int channel_bits, int compression, std::string* png_string,
+    const std::vector<std::pair<std::string, std::string> >* metadata);
+extern template bool WriteImageToBuffer<tstring>(
+    const void* image, int width, int height, int row_bytes, int num_channels,
+    int channel_bits, int compression, tstring* png_string,
+    const std::vector<std::pair<std::string, std::string> >* metadata);
 
 }  // namespace png
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_LIB_PNG_PNG_IO_H_
+#endif  // TENSORFLOW_CORE_LIB_PNG_PNG_IO_H_

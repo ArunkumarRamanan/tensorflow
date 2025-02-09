@@ -16,8 +16,10 @@ limitations under the License.
 // See docs in ../ops/io_ops.cc.
 
 #include <memory>
+
+#include "absl/status/status.h"
+#include "tensorflow/core/framework/reader_base.h"
 #include "tensorflow/core/framework/reader_op_kernel.h"
-#include "tensorflow/core/kernels/reader_base.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/io/record_reader.h"
 #include "tensorflow/core/lib/strings/strcat.h"
@@ -34,36 +36,36 @@ class TFRecordReader : public ReaderBase {
         offset_(0),
         compression_type_(compression_type) {}
 
-  Status OnWorkStartedLocked() override {
+  absl::Status OnWorkStartedLocked() override {
     offset_ = 0;
     TF_RETURN_IF_ERROR(env_->NewRandomAccessFile(current_work(), &file_));
 
     io::RecordReaderOptions options =
         io::RecordReaderOptions::CreateRecordReaderOptions(compression_type_);
     reader_.reset(new io::RecordReader(file_.get(), options));
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status OnWorkFinishedLocked() override {
+  absl::Status OnWorkFinishedLocked() override {
     reader_.reset(nullptr);
     file_.reset(nullptr);
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status ReadLocked(string* key, string* value, bool* produced,
-                    bool* at_end) override {
+  absl::Status ReadLocked(tstring* key, tstring* value, bool* produced,
+                          bool* at_end) override {
     *key = strings::StrCat(current_work(), ":", offset_);
-    Status status = reader_->ReadRecord(&offset_, value);
-    if (errors::IsOutOfRange(status)) {
+    absl::Status status = reader_->ReadRecord(&offset_, value);
+    if (absl::IsOutOfRange(status)) {
       *at_end = true;
-      return Status::OK();
+      return absl::OkStatus();
     }
     if (!status.ok()) return status;
     *produced = true;
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status ResetLocked() override {
+  absl::Status ResetLocked() override {
     offset_ = 0;
     reader_.reset(nullptr);
     file_.reset(nullptr);
@@ -87,7 +89,8 @@ class TFRecordReaderOp : public ReaderOpKernel {
     Env* env = context->env();
 
     string compression_type;
-    context->GetAttr("compression_type", &compression_type);
+    OP_REQUIRES_OK(context,
+                   context->GetAttr("compression_type", &compression_type));
 
     SetReaderFactory([this, compression_type, env]() {
       return new TFRecordReader(name(), compression_type, env);
@@ -96,6 +99,8 @@ class TFRecordReaderOp : public ReaderOpKernel {
 };
 
 REGISTER_KERNEL_BUILDER(Name("TFRecordReader").Device(DEVICE_CPU),
+                        TFRecordReaderOp);
+REGISTER_KERNEL_BUILDER(Name("TFRecordReaderV2").Device(DEVICE_CPU),
                         TFRecordReaderOp);
 
 }  // namespace tensorflow

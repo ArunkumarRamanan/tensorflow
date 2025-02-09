@@ -13,15 +13,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_PLATFORM_STREAM_EXECUTOR_NO_CUDA_H_
-#define TENSORFLOW_PLATFORM_STREAM_EXECUTOR_NO_CUDA_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_STREAM_EXECUTOR_NO_CUDA_H_
+#define TENSORFLOW_CORE_PLATFORM_STREAM_EXECUTOR_NO_CUDA_H_
 
+#include "xla/stream_executor/cuda/cuda_platform_id.h"
+#include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/dnn.h"
+#include "xla/stream_executor/event.h"
+#include "xla/stream_executor/host/host_platform_id.h"
+#include "xla/stream_executor/platform.h"
+#include "xla/stream_executor/platform_manager.h"
+#include "xla/stream_executor/rocm/rocm_platform_id.h"
+#include "xla/stream_executor/scratch_allocator.h"
+#include "xla/stream_executor/stream.h"
+#include "xla/stream_executor/stream_executor.h"
 #include "tensorflow/core/platform/platform.h"
+#include "tsl/platform/dso_loader.h"
 
-#if defined(PLATFORM_GOOGLE)
-#include "tensorflow/core/platform/google/stream_executor_no_cuda.h"
-#else
-#include "tensorflow/core/platform/default/stream_executor_no_cuda.h"
-#endif
-
-#endif  // TENSORFLOW_PLATFORM_STREAM_EXECUTOR_NO_CUDA_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_STREAM_EXECUTOR_NO_CUDA_H_

@@ -19,16 +19,46 @@ limitations under the License.
 #include <functional>
 #include <vector>
 
-#include "tensorflow/core/distributed_runtime/master_session.h"
+#include "xla/tsl/protobuf/rpc_options.pb.h"
+#include "tensorflow/core/distributed_runtime/worker_cache.h"
+#include "tensorflow/core/protobuf/cluster.pb.h"
+#include "tensorflow/core/protobuf/config.pb.h"
+#include "tensorflow/core/protobuf/tensorflow_server.pb.h"
 #include "tensorflow/core/public/session_options.h"
 
-namespace tensorflow {
-
-class Device;
+namespace tsl {
 class Env;
+}  // namespace tsl
+namespace tensorflow {
+using Env = tsl::Env;
+
+class CollectiveExecutorMgrInterface;
+class Device;
+class DeviceSet;
 class MasterSession;
 class OpRegistryInterface;
-class WorkerCacheInterface;
+
+// Options passed to the worker_cache_factory function.
+struct WorkerCacheFactoryOptions {
+  ClusterDef cluster_def;
+  string job_name;
+  int task_index;
+  int replica_index = 0;
+  RPCOptions rpc_options;
+
+  explicit WorkerCacheFactoryOptions() = default;
+
+  // Construct from a ServerDef proto.
+  explicit WorkerCacheFactoryOptions(const ServerDef& server_def) {
+    if (server_def.has_cluster() && !server_def.job_name().empty()) {
+      cluster_def = server_def.cluster();
+      job_name = server_def.job_name();
+      task_index = server_def.task_index();
+      rpc_options = server_def.default_session_config().rpc_options();
+      replica_index = server_def.replica();
+    }
+  }
+};
 
 // The master environment class, which holds a bag of pointers to
 // per-master state.
@@ -37,7 +67,7 @@ class WorkerCacheInterface;
 struct MasterEnv {
   Env* env = nullptr;
 
-  // Object from which WorkerInterface instances can be obtained.
+  // Object from which WorkerInterface instances can be obtained. Not owned.
   WorkerCacheInterface* worker_cache = nullptr;
 
   // The operation definitions to use.  Must be filled before use.
@@ -49,19 +79,35 @@ struct MasterEnv {
   // REQUIRES: !local_devices.empty().
   std::vector<Device*> local_devices;
 
+  // In large scaled distributed training, many singleton components (e.g.
+  // Rendezvous) can becomes the bottleneck of the system. This field allows
+  // us to shard the single components. This number will scale up with number
+  // of tasks in this cluster. It is always greater than 1.
+  int experimental_num_shards = 1;
+
   // Factory for creating master sessions, given session options and a
   // vector of devices.
   //
   // The caller of the function takes ownership of the returned
   // `MasterSession`, which may not be null. Ownership of the
-  // `MasterEnv*` is retained by the caller. The callee takes
-  // ownership of the `std::vector<Device*>*` argument, but does not
-  // take ownership of the `Device*` objects in the vector.
-  std::function<MasterSession*(const SessionOptions&, MasterEnv*,
-                               std::vector<Device*>*)>
+  // `MasterEnv*` is retained by the caller.
+  std::function<MasterSession*(
+      SessionOptions, MasterEnv*,
+      std::unique_ptr<std::vector<std::unique_ptr<Device>>>,
+      std::unique_ptr<WorkerCacheInterface>,
+      std::unique_ptr<DeviceSet> device_set,
+      std::vector<string> filtered_worker_list)>
       master_session_factory;
+
+  std::function<absl::Status(const WorkerCacheFactoryOptions&,
+                             WorkerCacheInterface**)>
+      worker_cache_factory;
+
+  // Generates per-step CollectiveExecutors and has access to utilities
+  // supporting collective operations. Not owned.
+  CollectiveExecutorMgrInterface* collective_executor_mgr = nullptr;
 };
 
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_MASTER_H_
+#endif  // TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_MASTER_ENV_H_

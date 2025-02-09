@@ -14,18 +14,31 @@
 # limitations under the License.
 # ==============================================================================
 
+BAZEL_VERSION="6.5.0"
+
+set +e
+local_bazel_ver=$(bazel version 2>&1 | grep -i label | awk '{print $3}')
+
+if [[ "$local_bazel_ver" == "$BAZEL_VERSION" ]]; then
+  exit 0
+fi
+
 set -e
 
-# Select bazel version.
-BAZEL_VERSION="0.3.1"
-
 # Install bazel.
-mkdir /bazel
+mkdir -p /bazel
 cd /bazel
-curl -fSsL -O https://github.com/bazelbuild/bazel/releases/download/$BAZEL_VERSION/bazel-$BAZEL_VERSION-installer-linux-x86_64.sh
-chmod +x /bazel/bazel-*.sh
-/bazel/bazel-$BAZEL_VERSION-installer-linux-x86_64.sh
-rm -f /bazel/bazel-$BAZEL_VERSION-installer-linux-x86_64.sh
+if [[ $(uname -m) == "aarch64" ]]; then
+  curl -o /usr/local/bin/bazel -fSsL https://github.com/bazelbuild/bazel/releases/download/$BAZEL_VERSION/bazel-$BAZEL_VERSION-linux-arm64
+  chmod +x /usr/local/bin/bazel
+else
+  if [[ ! -f "bazel-$BAZEL_VERSION-installer-linux-x86_64.sh" ]]; then
+    curl -fSsL -O https://github.com/bazelbuild/bazel/releases/download/$BAZEL_VERSION/bazel-$BAZEL_VERSION-installer-linux-x86_64.sh
+  fi
+  chmod +x /bazel/bazel-*.sh
+  /bazel/bazel-$BAZEL_VERSION-installer-linux-x86_64.sh
+  rm -f /bazel/bazel-$BAZEL_VERSION-installer-linux-x86_64.sh
+fi
 
 # Enable bazel auto completion.
 echo "source /usr/local/lib/bazel/bin/bazel-complete.bash" >> ~/.bashrc

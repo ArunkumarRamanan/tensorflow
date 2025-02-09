@@ -13,32 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_CLIENT_CQ_TAG_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_CLIENT_CQ_TAG_H_
+#ifndef TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_CLIENT_CQ_TAG_H_
+#define TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_CLIENT_CQ_TAG_H_
 
-#include "grpc++/grpc++.h"
-
-#include "tensorflow/core/distributed_runtime/rpc/grpc_util.h"
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/platform/macros.h"
+#include "xla/tsl/distributed_runtime/rpc/grpc_client_cq_tag.h"
 
 namespace tensorflow {
-
-// Represents a pending asynchronous client call as a tag that can be
-// stored in a `grpc::CompletionQueue`.
-class GrpcClientCQTag {
- public:
-  GrpcClientCQTag() {}
-  virtual ~GrpcClientCQTag() {}
-
-  // OnCompleted is invoked when the RPC has finished.
-  // Implementations of OnCompleted must delete *this.
-  virtual void OnCompleted(bool ok) = 0;
-
- private:
-  TF_DISALLOW_COPY_AND_ASSIGN(GrpcClientCQTag);
-};
-
+// NOLINTBEGIN(misc-unused-using-decls)
+using tsl::GrpcClientCQTag;
+// NOLINTEND(misc-unused-using-decls)
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_CLIENT_CQ_TAG_H_
+#endif  // TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_RPC_GRPC_CLIENT_CQ_TAG_H_

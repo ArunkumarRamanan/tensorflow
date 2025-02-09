@@ -15,21 +15,20 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#include "tensorflow/core/kernels/split_lib.h"
-
 #include "tensorflow/core/framework/numeric_types.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor_types.h"
+#include "tensorflow/core/kernels/split_lib.h"
 
 namespace tensorflow {
 namespace functor {
 
-template <typename T>
-void Split<Eigen::ThreadPoolDevice, T>::operator()(
-    const Eigen::ThreadPoolDevice& d, typename TTypes<T, 3>::Tensor output,
-    typename TTypes<T, 3>::ConstTensor input,
-    const Eigen::DSizes<Eigen::DenseIndex, 3>& slice_indices,
-    const Eigen::DSizes<Eigen::DenseIndex, 3>& slice_sizes) {
+template <typename T, int NDims>
+void Split<Eigen::ThreadPoolDevice, T, NDims>::operator()(
+    const Eigen::ThreadPoolDevice& d, typename TTypes<T, NDims>::Tensor output,
+    typename TTypes<T, NDims>::ConstTensor input,
+    const Eigen::DSizes<Eigen::DenseIndex, NDims>& slice_indices,
+    const Eigen::DSizes<Eigen::DenseIndex, NDims>& slice_sizes) {
   if (output.size() < 131072) {
     output = input.slice(slice_indices, slice_sizes);
   } else {
@@ -37,9 +36,16 @@ void Split<Eigen::ThreadPoolDevice, T>::operator()(
   }
 }
 
-#define DEFINE_CPU_KERNELS(T) template struct Split<Eigen::ThreadPoolDevice, T>;
+#define DEFINE_CPU_KERNELS(T)                           \
+  template struct Split<Eigen::ThreadPoolDevice, T, 2>; \
+  template struct Split<Eigen::ThreadPoolDevice, T, 3>;
 
-TF_CALL_ALL_TYPES(DEFINE_CPU_KERNELS)
+TF_CALL_ALL_TYPES(DEFINE_CPU_KERNELS);
+TF_CALL_float8_e5m2(DEFINE_CPU_KERNELS);
+TF_CALL_float8_e4m3fn(DEFINE_CPU_KERNELS);
+TF_CALL_int4(DEFINE_CPU_KERNELS);
+TF_CALL_uint4(DEFINE_CPU_KERNELS);
+DEFINE_CPU_KERNELS(quint8);
 
 }  // namespace functor
 }  // namespace tensorflow

@@ -19,16 +19,37 @@ limitations under the License.
 #include <functional>
 #include <string>
 #include <vector>
-#include "tensorflow/core/lib/core/status.h"
 
-namespace tensorflow {
-class Device;
+#include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/platform/protobuf.h"
+#include "tensorflow/core/platform/stringpiece.h"
+
+namespace tsl {
 class Env;
+}  // namespace tsl
+namespace tensorflow {
+using Env = tsl::Env;
+class DeviceAttributes;
+class Device;
 class WorkerCacheInterface;
 
+// This callback should have the same definition as DeviceMgr::LookupDevice
+// It assigns *device with pointer to Device of the given 'name', where 'name'
+// is either a full device name, or just the replica-local suffix.
+typedef std::function<absl::Status(absl::string_view name, Device** device)>
+    LookupLocalDevice;
+
+// Creates Remote Devices for the provided device attributes. Helpful when the
+// list of attributes is known, and doesn't need to be discovered via RPC.
+void AsRemoteDevices(
+    Env* env,
+    const protobuf::RepeatedPtrField<DeviceAttributes>& device_attributes,
+    LookupLocalDevice lookup_local_device,
+    std::vector<std::unique_ptr<Device>>* remote_devices);
+
 // NewRemoteDevices discovers available devices on the
-// 'remote_worker'.  The implementation uses 'channel_cache' to
-// discover how to communicate with the 'remote_worker' (via gRPC, for
+// 'worker_name'.  The implementation uses 'channel_cache' to
+// discover how to communicate with the 'worker_name' (via gRPC, for
 // example).
 //
 // NewRemoteDevices does not block.
@@ -38,11 +59,14 @@ class WorkerCacheInterface;
 //
 // Otherwise, the 'done' callback is given an error status and the
 // vector is empty.
-typedef std::function<void(const Status&, std::vector<Device*>*)>
+typedef std::function<void(const absl::Status&, std::vector<Device*>*)>
     NewRemoteDevicesDone;
 void NewRemoteDevices(Env* env, WorkerCacheInterface* worker_cache,
-                      const string& remote_worker, NewRemoteDevicesDone done);
+                      const string& worker_name, NewRemoteDevicesDone done);
 
+// Create Remote Device based on the given attributes.
+std::unique_ptr<Device> NewRemoteDevice(Env* env,
+                                        DeviceAttributes device_attribute);
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_REMOTE_DEVICE_H_

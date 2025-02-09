@@ -13,9 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/core/common_runtime/allocator_retry.h"
-
+#include <memory>
 #include <vector>
+
+#include "tensorflow/core/common_runtime/allocator_retry.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/logging.h"
@@ -58,7 +59,7 @@ class FakeAllocator {
   AllocatorRetry retry_;
   void* good_ptr_ = reinterpret_cast<void*>(0xdeadbeef);
   mutex mu_;
-  size_t memory_capacity_ GUARDED_BY(mu_);
+  size_t memory_capacity_ TF_GUARDED_BY(mu_);
   int millis_to_wait_;
 };
 
@@ -100,7 +101,7 @@ class AlternatingBarrier {
   }
 
  private:
-  void IncrementTurn() EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+  void IncrementTurn() TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     int skipped = 0;
     while (skipped < num_users_) {
       next_turn_ = (next_turn_ + 1) % num_users_;
@@ -112,8 +113,8 @@ class AlternatingBarrier {
   mutex mu_;
   condition_variable cv_;
   int num_users_;
-  int next_turn_ GUARDED_BY(mu_);
-  std::vector<bool> done_ GUARDED_BY(mu_);
+  int next_turn_ TF_GUARDED_BY(mu_);
+  std::vector<bool> done_ TF_GUARDED_BY(mu_);
 };
 
 class GPUAllocatorRetryTest : public ::testing::Test {
@@ -121,7 +122,7 @@ class GPUAllocatorRetryTest : public ::testing::Test {
   GPUAllocatorRetryTest() {}
 
   void LaunchConsumerThreads(int num_consumers, int cap_needed) {
-    barrier_.reset(new AlternatingBarrier(num_consumers));
+    barrier_ = std::make_unique<AlternatingBarrier>(num_consumers);
     consumer_count_.resize(num_consumers, 0);
     for (int i = 0; i < num_consumers; ++i) {
       consumers_.push_back(Env::Default()->StartThread(
@@ -174,8 +175,8 @@ class GPUAllocatorRetryTest : public ::testing::Test {
   std::vector<int> consumer_count_;
   Notification notifier_;
   mutex mu_;
-  bool has_failed_ GUARDED_BY(mu_) = false;
-  int count_ GUARDED_BY(mu_) = 0;
+  bool has_failed_ TF_GUARDED_BY(mu_) = false;
+  int count_ TF_GUARDED_BY(mu_) = 0;
 };
 
 // Verifies correct retrying when memory is slightly overcommitted but
@@ -183,7 +184,7 @@ class GPUAllocatorRetryTest : public ::testing::Test {
 TEST_F(GPUAllocatorRetryTest, RetrySuccess) {
   // Support up to 2 allocations simultaneously, waits up to 1000 msec for
   // a chance to alloc.
-  alloc_.reset(new FakeAllocator(2, 1000));
+  alloc_ = std::make_unique<FakeAllocator>(2, 1000);
   // Launch 3 consumers, each of whom needs 1 unit at a time.
   LaunchConsumerThreads(3, 1);
   // This should be enough time for each consumer to be satisfied many times.
@@ -208,7 +209,7 @@ TEST_F(GPUAllocatorRetryTest, RetrySuccess) {
 TEST_F(GPUAllocatorRetryTest, NoRetryFail) {
   // Support up to 2 allocations simultaneously, waits up to 0 msec for
   // a chance to alloc.
-  alloc_.reset(new FakeAllocator(2, 0));
+  alloc_ = std::make_unique<FakeAllocator>(2, 0);
   // Launch 3 consumers, each of whom needs 1 unit at a time.
   LaunchConsumerThreads(3, 1);
   Env::Default()->SleepForMicroseconds(50000);
@@ -229,7 +230,7 @@ TEST_F(GPUAllocatorRetryTest, NoRetryFail) {
 TEST_F(GPUAllocatorRetryTest, RetryInsufficientFail) {
   // Support up to 2 allocations simultaneously, waits up to 1000 msec for
   // a chance to alloc.
-  alloc_.reset(new FakeAllocator(2, 1000));
+  alloc_ = std::make_unique<FakeAllocator>(2, 1000);
   // Launch 3 consumers, each of whom needs 2 units at a time.  We expect
   // deadlock where 2 consumers each hold 1 unit, and timeout trying to
   // get the second.

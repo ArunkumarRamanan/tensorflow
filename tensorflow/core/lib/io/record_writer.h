@@ -13,74 +13,29 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_LIB_IO_RECORD_WRITER_H_
-#define TENSORFLOW_LIB_IO_RECORD_WRITER_H_
+#ifndef TENSORFLOW_CORE_LIB_IO_RECORD_WRITER_H_
+#define TENSORFLOW_CORE_LIB_IO_RECORD_WRITER_H_
 
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/lib/core/stringpiece.h"
+#include "tensorflow/core/lib/hash/crc32c.h"
+#include "tensorflow/core/platform/coding.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/stringpiece.h"
 #if !defined(IS_SLIM_BUILD)
 #include "tensorflow/core/lib/io/zlib_compression_options.h"
 #include "tensorflow/core/lib/io/zlib_outputbuffer.h"
 #endif  // IS_SLIM_BUILD
+#include "xla/tsl/lib/io/record_writer.h"
+#include "tensorflow/core/platform/cord.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
-
-class WritableFile;
-
 namespace io {
-
-class RecordWriterOptions {
- public:
-  enum CompressionType { NONE = 0, ZLIB_COMPRESSION = 1 };
-  CompressionType compression_type = NONE;
-
-  static RecordWriterOptions CreateRecordWriterOptions(
-      const string& compression_type);
-
-// Options specific to zlib compression.
-#if !defined(IS_SLIM_BUILD)
-  ZlibCompressionOptions zlib_options;
-#endif  // IS_SLIM_BUILD
-};
-
-class RecordWriter {
- public:
-  // Create a writer that will append data to "*dest".
-  // "*dest" must be initially empty.
-  // "*dest" must remain live while this Writer is in use.
-  RecordWriter(WritableFile* dest,
-               const RecordWriterOptions& options = RecordWriterOptions());
-
-  ~RecordWriter();
-
-  Status WriteRecord(StringPiece slice);
-
-  // Flushes any buffered data held by underlying containers of the
-  // RecordWriter to the WritableFile. Does *not* flush the
-  // WritableFile.
-  Status Flush() {
-#if !defined(IS_SLIM_BUILD)
-    if (zlib_output_buffer_) {
-      return zlib_output_buffer_->Flush();
-    }
-#endif  // IS_SLIM_BUILD
-
-    return Status::OK();
-  }
-
- private:
-  WritableFile* const dest_;
-  RecordWriterOptions options_;
-#if !defined(IS_SLIM_BUILD)
-  std::unique_ptr<ZlibOutputBuffer> zlib_output_buffer_;
-#endif  // IS_SLIM_BUILD
-
-  TF_DISALLOW_COPY_AND_ASSIGN(RecordWriter);
-};
-
+// NOLINTBEGIN(misc-unused-using-decls)
+using tsl::io::RecordWriter;
+using tsl::io::RecordWriterOptions;
+// NOLINTEND(misc-unused-using-decls)
 }  // namespace io
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_LIB_IO_RECORD_WRITER_H_
+#endif  // TENSORFLOW_CORE_LIB_IO_RECORD_WRITER_H_

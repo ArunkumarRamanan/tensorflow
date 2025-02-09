@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_FRAMEWORK_CONTROL_FLOW_H_
-#define TENSORFLOW_FRAMEWORK_CONTROL_FLOW_H_
+#ifndef TENSORFLOW_CORE_FRAMEWORK_CONTROL_FLOW_H_
+#define TENSORFLOW_CORE_FRAMEWORK_CONTROL_FLOW_H_
 
 #include "tensorflow/core/lib/hash/hash.h"
 #include "tensorflow/core/platform/logging.h"
@@ -23,7 +23,7 @@ limitations under the License.
 namespace tensorflow {
 
 const uint64 kIllegalFrameId = ~0uLL;
-const int64 kIllegalIterId = -1;
+const int64_t kIllegalIterId = -1;
 
 // For the purpose of control flow, every tensor produced by TensorFlow is
 // conceptually tagged by a 'FrameAndIter'. FrameAndIter consists of a
@@ -31,11 +31,11 @@ const int64 kIllegalIterId = -1;
 // in the frame with frame_id at the iteration of iter_id.
 struct FrameAndIter {
   uint64 frame_id = kIllegalFrameId;
-  int64 iter_id = kIllegalIterId;
+  int64_t iter_id = kIllegalIterId;
 
   FrameAndIter() {}
 
-  FrameAndIter(uint64 frame, int64 iter) {
+  FrameAndIter(uint64 frame, int64_t iter) {
     frame_id = frame;
     iter_id = iter;
   }
@@ -48,11 +48,11 @@ struct FrameAndIter {
 struct FrameAndIterHash {
   size_t operator()(const FrameAndIter& key) const {
     // Make sure there are no padding bytes that we don't want
-    CHECK_EQ(sizeof(uint64) + sizeof(int64), sizeof(FrameAndIter));
+    CHECK_EQ(sizeof(uint64) + sizeof(int64_t), sizeof(FrameAndIter));
     return Hash64(reinterpret_cast<const char*>(&key), sizeof(FrameAndIter));
   }
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_FRAMEWORK_CONTROL_FLOW_H_
+#endif  // TENSORFLOW_CORE_FRAMEWORK_CONTROL_FLOW_H_

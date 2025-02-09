@@ -13,74 +13,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_PLATFORM_TEST_H_
-#define TENSORFLOW_PLATFORM_TEST_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_TEST_H_
+#define TENSORFLOW_CORE_PLATFORM_TEST_H_
 
-#include <memory>
-#include <vector>
-
+#include <gtest/gtest.h>  // IWYU pragma: export
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/platform.h"
 #include "tensorflow/core/platform/types.h"
-
-// As of September 2016, we continue to attempt to avoid the use of gmock aka
-// googlemock included in the test framework
-// (https://github.com/google/googletest) to discourage over-eager use of mocks
-// that lead to cumbersome class hierarchies and tests that might end up not
-// testing real code in important ways.
-#if defined(PLATFORM_GOOGLE) || defined(PLATFORM_GOOGLE_ANDROID)
-#include "tensorflow/core/platform/google/build_config/gunit.h"
-#else
-#include <gtest/gtest.h>
-#endif
+#include "tsl/platform/test.h"
 
 namespace tensorflow {
+
 namespace testing {
-
-// Return a temporary directory suitable for temporary testing files.
-string TmpDir();
-
-// Returns the path to TensorFlow in the directory containing data
-// dependencies.
-string TensorFlowSrcRoot();
-
-// Return a random number generator seed to use in randomized tests.
-// Returns the same value for the lifetime of the process.
-int RandomSeed();
-
-// Supports spawning and killing child processes, for use in
-// multi-process testing.
-class SubProcess {
- public:
-  virtual ~SubProcess() {}
-
-  // Starts the subprocess. Returns true on success, otherwise false.
-  // NOTE: This method is not thread-safe.
-  virtual bool Start() = 0;
-
-  // Kills the subprocess with the given signal number. Returns true
-  // on success, otherwise false.
-  // NOTE: This method is not thread-safe.
-  virtual bool Kill(int signal) = 0;
-
- protected:
-  SubProcess() {}
-
- private:
-  TF_DISALLOW_COPY_AND_ASSIGN(SubProcess);
-};
-
-// Returns an object that represents a child process that will be
-// launched with the given command-line arguments `argv`. The process
-// must be explicitly started by calling the Start() method on the
-// returned object.
-std::unique_ptr<SubProcess> CreateSubProcess(const std::vector<string>& argv);
-
-// Returns an unused port number, for use in multi-process testing.
-// NOTE: This function is not thread-safe.
-int PickUnusedPortOrDie();
+using tsl::testing::PickUnusedPortOrDie;
+using tsl::testing::RandomSeed;
+using tsl::testing::TensorFlowSrcRoot;
+using tsl::testing::TmpDir;
 
 }  // namespace testing
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_PLATFORM_TEST_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_TEST_H_

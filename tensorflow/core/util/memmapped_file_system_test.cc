@@ -14,12 +14,19 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/util/memmapped_file_system.h"
 
+#include <memory>
+
 #include "tensorflow/core/framework/tensor_testutil.h"
+#include "tensorflow/core/framework/versions.pb.h"
 #include "tensorflow/core/graph/graph_def_builder.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/util/memmapped_file_system_writer.h"
+
+#ifdef PLATFORM_WINDOWS
+#undef DeleteFile
+#endif
 
 namespace tensorflow {
 
@@ -31,8 +38,9 @@ constexpr char kTensor2FileName[] = "memmapped_package://t2";
 constexpr char kProtoFileName[] = "memmapped_package://b";
 constexpr int kTestGraphDefVersion = 666;
 
-Status CreateMemmappedFileSystemFile(const string& filename, bool corrupted,
-                                     Tensor* test_tensor) {
+absl::Status CreateMemmappedFileSystemFile(const string& filename,
+                                           bool corrupted,
+                                           Tensor* test_tensor) {
   Env* env = Env::Default();
   MemmappedFileSystemWriter writer;
   TF_RETURN_IF_ERROR(writer.InitializeToFile(env, filename));
@@ -45,19 +53,20 @@ Status CreateMemmappedFileSystemFile(const string& filename, bool corrupted,
 
   // Create a proto with some fields.
   GraphDef graph_def;
-  graph_def.set_version(kTestGraphDefVersion);
+  graph_def.mutable_versions()->set_producer(kTestGraphDefVersion);
+  graph_def.mutable_versions()->set_min_consumer(kTestGraphDefVersion);
   TF_RETURN_IF_ERROR(writer.SaveProtobuf(graph_def, kProtoFileName));
 
   // Save a tensor after the proto to check that alignment works.
   test::FillFn<float>(test_tensor,
-                      [](int i) { return static_cast<float>(i * i * i); });
+                      [](int i) { return static_cast<float>(i) * i * i; });
   TF_RETURN_IF_ERROR(writer.SaveTensor(*test_tensor, kTensor2FileName));
 
   if (!corrupted) {
     // Flush and close the file.
     TF_RETURN_IF_ERROR(writer.FlushAndClose());
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 TEST(MemmappedFileSystemTest, SimpleTest) {
@@ -74,7 +83,8 @@ TEST(MemmappedFileSystemTest, SimpleTest) {
   GraphDef test_graph_def;
   TF_EXPECT_OK(
       ReadBinaryProto(&memmapped_env, kProtoFileName, &test_graph_def));
-  EXPECT_EQ(kTestGraphDefVersion, test_graph_def.version());
+  EXPECT_EQ(kTestGraphDefVersion, test_graph_def.versions().producer());
+  EXPECT_EQ(kTestGraphDefVersion, test_graph_def.versions().min_consumer());
   // Check that we can correctly get a tensor memory.
   std::unique_ptr<ReadOnlyMemoryRegion> memory_region;
   TF_ASSERT_OK(memmapped_env.NewReadOnlyMemoryRegionFromFile(kTensor2FileName,
@@ -83,8 +93,8 @@ TEST(MemmappedFileSystemTest, SimpleTest) {
   // The memory region can be bigger but not less than Tensor size.
   ASSERT_GE(memory_region->length(), test_tensor.TotalBytes());
   EXPECT_EQ(test_tensor.tensor_data(),
-            StringPiece(static_cast<const char*>(memory_region->data()),
-                        test_tensor.TotalBytes()));
+            absl::string_view(static_cast<const char*>(memory_region->data()),
+                              test_tensor.TotalBytes()));
   // Check that GetFileSize works.
   uint64 file_size = 0;
   TF_ASSERT_OK(memmapped_env.GetFileSize(kTensor2FileName, &file_size));
@@ -102,11 +112,12 @@ TEST(MemmappedFileSystemTest, SimpleTest) {
           .code());
 
   // Check FileExists.
-  EXPECT_TRUE(memmapped_env.FileExists(kTensor2FileName));
-  EXPECT_FALSE(memmapped_env.FileExists("bla-bla-bla"));
+  TF_EXPECT_OK(memmapped_env.FileExists(kTensor2FileName));
+  EXPECT_EQ(error::Code::NOT_FOUND,
+            memmapped_env.FileExists("bla-bla-bla").code());
 }
 
-TEST(MemmappedFileSystemTest, NotInitalized) {
+TEST(MemmappedFileSystemTest, NotInitialized) {
   MemmappedEnv memmapped_env(Env::Default());
   std::unique_ptr<ReadOnlyMemoryRegion> memory_region;
   EXPECT_EQ(
@@ -128,7 +139,7 @@ TEST(MemmappedFileSystemTest, Corrupted) {
   TF_ASSERT_OK(CreateMemmappedFileSystemFile(filename, true, &test_tensor));
   MemmappedFileSystem memmapped_env;
   ASSERT_NE(memmapped_env.InitializeFromFile(Env::Default(), filename),
-            Status::OK());
+            absl::OkStatus());
 }
 
 TEST(MemmappedFileSystemTest, ProxyToDefault) {
@@ -136,8 +147,15 @@ TEST(MemmappedFileSystemTest, ProxyToDefault) {
   const string dir = testing::TmpDir();
   const string filename = io::JoinPath(dir, "test_file");
   // Check that we can create write and read ordinary file.
-  std::unique_ptr<WritableFile> writable_file;
-  TF_ASSERT_OK(memmapped_env.NewAppendableFile(filename, &writable_file));
+  std::unique_ptr<WritableFile> writable_file_temp;
+  TF_ASSERT_OK(memmapped_env.NewAppendableFile(filename, &writable_file_temp));
+  // Making sure to clean up after the test finishes.
+  const auto adh = [&memmapped_env, &filename](WritableFile* f) {
+    delete f;
+    TF_CHECK_OK(memmapped_env.DeleteFile(filename));
+  };
+  std::unique_ptr<WritableFile, decltype(adh)> writable_file(
+      writable_file_temp.release(), adh);
   const string test_string = "bla-bla-bla";
   TF_ASSERT_OK(writable_file->Append(test_string));
   TF_ASSERT_OK(writable_file->Close());

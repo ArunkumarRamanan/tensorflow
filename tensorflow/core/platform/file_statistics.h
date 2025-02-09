@@ -13,25 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_PLATFORM_FILE_STATISTICS_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_PLATFORM_FILE_STATISTICS_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_FILE_STATISTICS_H_
+#define TENSORFLOW_CORE_PLATFORM_FILE_STATISTICS_H_
 
 #include "tensorflow/core/platform/types.h"
+#include "tsl/platform/file_statistics.h"
 
 namespace tensorflow {
-
-struct FileStatistics {
-  // The length of the file or -1 if finding file length is not supported.
-  int64 length = -1;
-  // The last modified time in nanoseconds.
-  int64 mtime_nsec = 0;
-  // True if the file is a directory, otherwise false.
-  bool is_directory = false;
-
-  FileStatistics() {}
-  ~FileStatistics() {}
-};
-
+using tsl::FileStatistics;  // NOLINT
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_PLATFORM_FILE_STATISTICS_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_FILE_STATISTICS_H_

@@ -13,17 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_PLATFORM_CLOUD_TIME_UTIL_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_PLATFORM_CLOUD_TIME_UTIL_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_CLOUD_TIME_UTIL_H_
+#define TENSORFLOW_CORE_PLATFORM_CLOUD_TIME_UTIL_H_
 
-#include "tensorflow/core/lib/core/status.h"
+#include "xla/tsl/platform/cloud/time_util.h"
+#include "tensorflow/core/platform/status.h"
 
 namespace tensorflow {
-
-/// Parses the timestamp in RFC 3339 format and returns it
-/// as nanoseconds since epoch.
-Status ParseRfc3339Time(const string& time, int64* mtime_nsec);
-
+using tsl::ParseRfc3339Time;  // NOLINT(misc-unused-using-decls)
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_PLATFORM_CLOUD_TIME_UTIL_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_CLOUD_TIME_UTIL_H_

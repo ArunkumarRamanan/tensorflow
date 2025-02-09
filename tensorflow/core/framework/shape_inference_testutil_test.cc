@@ -15,9 +15,12 @@ limitations under the License.
 
 #include "tensorflow/core/framework/shape_inference_testutil.h"
 
+#include <string>
+
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
+#include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -25,10 +28,10 @@ namespace shape_inference {
 
 namespace {
 
-#define EXPECT_CONTAINS(str, substr)                                 \
-  do {                                                               \
-    string s = (str);                                                \
-    EXPECT_TRUE(StringPiece(s).contains(substr)) << "String: " << s; \
+#define EXPECT_CONTAINS(str, substr)                              \
+  do {                                                            \
+    string s = (str);                                             \
+    EXPECT_TRUE(absl::StrContains(s, substr)) << "String: " << s; \
   } while (false)
 
 static OpShapeInferenceFn* global_fn_ptr = nullptr;
@@ -51,6 +54,7 @@ string RunInferShapes(const string& op_name, const string& ins,
   ShapeInferenceTestOp op(op_name);
   const int num_inputs = 1 + std::count(ins.begin(), ins.end(), ';');
   std::vector<NodeDefBuilder::NodeOut> src_list;
+  src_list.reserve(num_inputs);
   for (int i = 0; i < num_inputs; ++i) src_list.emplace_back("a", 0, DT_FLOAT);
   NodeDef node_def;
   TF_CHECK_OK(NodeDefBuilder("dummy", op_name)
@@ -58,8 +62,8 @@ string RunInferShapes(const string& op_name, const string& ins,
                   .Attr("N", num_inputs)
                   .Finalize(&op.node_def));
   global_fn_ptr = &fn;
-  return ShapeInferenceTestutil::InferShapes(op, ins, expected_outs)
-      .error_message();
+  return std::string(
+      ShapeInferenceTestutil::InferShapes(op, ins, expected_outs).message());
 }
 
 }  // namespace
@@ -67,25 +71,25 @@ string RunInferShapes(const string& op_name, const string& ins,
 TEST(ShapeInferenceTestutilTest, Failures) {
   auto fn_copy_input_0 = [](InferenceContext* c) {
     c->set_output(0, c->input(0));
-    return Status::OK();
+    return absl::OkStatus();
   };
   auto fn_copy_input_2 = [](InferenceContext* c) {
     c->set_output(0, c->input(2));
-    return Status::OK();
+    return absl::OkStatus();
   };
   auto fn_output_unknown_shapes = [](InferenceContext* c) {
     for (int i = 0; i < c->num_outputs(); ++i) {
       c->set_output(i, c->UnknownShape());
     }
-    return Status::OK();
+    return absl::OkStatus();
   };
   auto fn_output_1_2 = [](InferenceContext* c) {
     c->set_output(0, c->Matrix(1, 2));
-    return Status::OK();
+    return absl::OkStatus();
   };
   auto fn_output_u_2 = [](InferenceContext* c) {
     c->set_output(0, c->Matrix(InferenceContext::kUnknownDim, 2));
-    return Status::OK();
+    return absl::OkStatus();
   };
   const string& op = "OpOneOut";
 
@@ -93,10 +97,10 @@ TEST(ShapeInferenceTestutilTest, Failures) {
             RunInferShapes(op, "[1];[2];[1]", "e", fn_copy_input_0));
   EXPECT_CONTAINS(RunInferShapes(op, "[1];[2];[1]", "[1];[2]", fn_copy_input_0),
                   "wrong number of outputs");
-  EXPECT_EQ("Op type not registered 'NoSuchOp'",
-            ShapeInferenceTestutil::InferShapes(
-                ShapeInferenceTestOp("NoSuchOp"), "", "")
-                .error_message());
+  auto s = ShapeInferenceTestutil::InferShapes(ShapeInferenceTestOp("NoSuchOp"),
+                                               "", "");
+  EXPECT_TRUE(
+      absl::StartsWith(s.message(), "Op type not registered 'NoSuchOp'"));
 
   // Wrong shape error messages.
   EXPECT_CONTAINS(RunInferShapes(op, "[1];[2];[1]", "?", fn_copy_input_0),
@@ -137,7 +141,7 @@ TEST(ShapeInferenceTestutilTest, Failures) {
   auto fn = [](InferenceContext* c) {
     c->set_output(0, c->MakeShape({c->Dim(c->input(0), 1), c->MakeDim(2),
                                    c->UnknownDim(), c->Dim(c->input(2), 0)}));
-    return Status::OK();
+    return absl::OkStatus();
   };
   const string ins = "[0,1,?];[2];[1]";
   EXPECT_CONTAINS(RunInferShapes(op, ins, "[?,2,?,d2_0]", fn),

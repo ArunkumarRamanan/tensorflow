@@ -13,47 +13,28 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_PLATFORM_PROFILEUTILS_ANDROID_ARMV7A_CPU_UTILS_HELPER_H__
-#define TENSORFLOW_PLATFORM_PROFILEUTILS_ANDROID_ARMV7A_CPU_UTILS_HELPER_H__
+#ifndef TENSORFLOW_CORE_PLATFORM_PROFILE_UTILS_ANDROID_ARMV7A_CPU_UTILS_HELPER_H_
+#define TENSORFLOW_CORE_PLATFORM_PROFILE_UTILS_ANDROID_ARMV7A_CPU_UTILS_HELPER_H_
 
+#include <sys/types.h>
+
+#include "xla/tsl/platform/profile_utils/android_armv7a_cpu_utils_helper.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/profile_utils/i_cpu_utils_helper.h"
 #include "tensorflow/core/platform/types.h"
+
+#if defined(__ANDROID__) && (__ANDROID_API__ >= 21) && \
+    (defined(__ARM_ARCH_7A__) || defined(__aarch64__))
 
 struct perf_event_attr;
 
 namespace tensorflow {
 namespace profile_utils {
+using tsl::profile_utils::AndroidArmV7ACpuUtilsHelper;  // NOLINT
+}  // namespace profile_utils
+}  // namespace tensorflow
 
-// Implementation of CpuUtilsHelper for Android armv7a
-class AndroidArmV7ACpuUtilsHelper : public ICpuUtilsHelper {
- public:
-  AndroidArmV7ACpuUtilsHelper() = default;
-  void ResetClockCycle() final;
-  uint64 GetCurrentClockCycle() final;
-  void EnableClockCycleProfiling(bool enable) final;
-  int64 CalculateCpuFrequency() final;
+#endif  // defined(__ANDROID__) && (__ANDROID_API__ >= 21) &&
+        // (defined(__ARM_ARCH_7A__) || defined(__aarch64__))
 
- private:
-  static constexpr int INVALID_FD = -1;
-  static constexpr int64 INVALID_CPU_FREQUENCY = -1;
-
-  void InitializeInternal();
-
-  // syscall __NR_perf_event_open with arguments
-  int OpenPerfEvent(perf_event_attr *const hw_event, const pid_t pid,
-                    const int cpu, const int group_fd,
-                    const unsigned long flags);
-
-  int64 ReadCpuFrequencyFile(const int cpu_id, const char *const type);
-
-  bool is_initialized_{false};
-  int fd_{INVALID_FD};
-
-  TF_DISALLOW_COPY_AND_ASSIGN(AndroidArmV7ACpuUtilsHelper);
-};
-
-}  // profile_utils
-}  // tensorflow
-
-#endif  // TENSORFLOW_PLATFORM_PROFILEUTILS_ANDROID_ARMV7A_CPU_UTILS_HELPER_H__
+#endif  // TENSORFLOW_CORE_PLATFORM_PROFILE_UTILS_ANDROID_ARMV7A_CPU_UTILS_HELPER_H_

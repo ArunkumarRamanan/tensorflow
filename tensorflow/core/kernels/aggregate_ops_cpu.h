@@ -13,15 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_AGGREGATE_OPS_CPU_H_
-#define TENSORFLOW_KERNELS_AGGREGATE_OPS_CPU_H_
+#ifndef TENSORFLOW_CORE_KERNELS_AGGREGATE_OPS_CPU_H_
+#define TENSORFLOW_CORE_KERNELS_AGGREGATE_OPS_CPU_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/tensor_types.h"
 
 #include "tensorflow/core/kernels/aggregate_ops.h"
 
 typedef Eigen::ThreadPoolDevice CPUDevice;
+
 
 namespace tensorflow {
 
@@ -133,8 +134,9 @@ struct Add9Functor<CPUDevice, T> {
   }
 };
 
+
 }  // namespace functor
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_AGGREGATE_OPS_CPU_H_
+#endif  // TENSORFLOW_CORE_KERNELS_AGGREGATE_OPS_CPU_H_

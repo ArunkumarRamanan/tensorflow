@@ -13,18 +13,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_PLATFORM_HOST_INFO_H_
-#define TENSORFLOW_PLATFORM_HOST_INFO_H_
+#ifndef TENSORFLOW_CORE_PLATFORM_HOST_INFO_H_
+#define TENSORFLOW_CORE_PLATFORM_HOST_INFO_H_
 
 #include "tensorflow/core/platform/types.h"
+#include "tsl/platform/host_info.h"
 
 namespace tensorflow {
 namespace port {
-
-// Return the hostname of the machine on which this process is running
-string Hostname();
-
+using tsl::port::Hostname;
+using tsl::port::IOStatistics;
+using tsl::port::JobName;
+using tsl::port::JobUid;
 }  // namespace port
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_PLATFORM_HOST_INFO_H_
+#endif  // TENSORFLOW_CORE_PLATFORM_HOST_INFO_H_

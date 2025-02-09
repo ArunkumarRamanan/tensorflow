@@ -17,33 +17,19 @@ limitations under the License.
 
 #include <vector>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/framework/types.h"
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-#include "tensorflow/core/kernels/cuda_device_array.h"
+#include "tensorflow/core/kernels/concat_lib_gpu.h"
+#include "tensorflow/core/kernels/gpu_device_array.h"
 
 namespace tensorflow {
-
-template <typename T, typename IntType>
-void ConcatGPUSlice(
-    const Eigen::GpuDevice& gpu_device,
-    const std::vector<std::unique_ptr<typename TTypes<T, 2>::ConstMatrix>>&
-        inputs_flat,
-    typename TTypes<T, 2>::Matrix* output);
-
-template <typename T, typename IntType>
-void ConcatGPUImpl(const Eigen::GpuDevice& d,
-                   const CudaDeviceArrayStruct<const T*>& input_ptrs,
-                   const CudaDeviceArrayStruct<IntType>& ptr_offsets,
-                   bool same_size, int slice_size,
-                   typename TTypes<T, 2>::Matrix* output);
-
 namespace {
 
 template <typename T, typename IntType>
@@ -52,14 +38,14 @@ void ConcatGPUCall(
     const std::vector<std::unique_ptr<typename TTypes<T, 2>::ConstMatrix>>&
         inputs_flat,
     typename TTypes<T, 2>::Tensor* output_flat) {
-  CudaDeviceArrayOnHost<const T*> input_ptrs(c, inputs_flat.size());
+  GpuDeviceArrayOnHost<const T*> input_ptrs(c, inputs_flat.size());
   OP_REQUIRES_OK(c, input_ptrs.Init());
   for (int i = 0; i < inputs_flat.size(); ++i) {
     input_ptrs.Set(i, inputs_flat[i]->data());
   }
   OP_REQUIRES_OK(c, input_ptrs.Finalize());
 
-  CudaDeviceArrayOnHost<IntType> output_scan(c, inputs_flat.size() + 1);
+  GpuDeviceArrayOnHost<IntType> output_scan(c, inputs_flat.size() + 1);
   OP_REQUIRES_OK(c, output_scan.Init());
   IntType scan = 0;
   output_scan.Set(0, scan);
@@ -91,7 +77,8 @@ void ConcatGPU(
     if (output->NumElements() < std::numeric_limits<int32>::max()) {
       ConcatGPUSlice<T, int32>(c->eigen_gpu_device(), inputs_flat, output_flat);
     } else {
-      ConcatGPUSlice<T, int64>(c->eigen_gpu_device(), inputs_flat, output_flat);
+      ConcatGPUSlice<T, int64_t>(c->eigen_gpu_device(), inputs_flat,
+                                 output_flat);
     }
   } else {
     // Switching indexing to int64 might cause performance issues.
@@ -100,7 +87,7 @@ void ConcatGPU(
     if (output->NumElements() < std::numeric_limits<int32>::max()) {
       ConcatGPUCall<T, int32>(c, inputs_flat, output_flat);
     } else {
-      ConcatGPUCall<T, int64>(c, inputs_flat, output_flat);
+      ConcatGPUCall<T, int64_t>(c, inputs_flat, output_flat);
     }
   }
 }
@@ -112,11 +99,13 @@ void ConcatGPU(
           inputs_flat,                                                        \
       Tensor* output, typename TTypes<T, 2>::Tensor* output_flat);
 
-TF_CALL_GPU_NUMBER_TYPES(REGISTER);
-REGISTER(bfloat16);
+TF_CALL_INTEGRAL_TYPES(REGISTER);  // int32 Needed for TensorLists.
+TF_CALL_GPU_ALL_TYPES(REGISTER);
+TF_CALL_float8_e5m2(REGISTER);
+TF_CALL_float8_e4m3fn(REGISTER);
 
 #undef REGISTER
 
 }  // namespace tensorflow
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM

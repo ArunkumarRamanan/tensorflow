@@ -15,9 +15,11 @@ limitations under the License.
 
 // See docs in ../ops/data_flow_ops.cc.
 
+#include <cstddef>
 #include <deque>
 #include <vector>
 
+#include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -34,17 +36,19 @@ limitations under the License.
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/util/batch_util.h"
 
 namespace tensorflow {
 
-class RandomShuffleQueue : public TypedQueue<std::vector<PersistentTensor> > {
+class RandomShuffleQueue : public TypedQueue<std::vector<Tensor> > {
  public:
-  RandomShuffleQueue(int32 capacity, int32 min_after_dequeue, int64 seed,
-                     int64 seed2, const DataTypeVector& component_dtypes,
+  RandomShuffleQueue(int32_t capacity, int32_t min_after_dequeue, int64_t seed,
+                     int64_t seed2, const DataTypeVector& component_dtypes,
                      const std::vector<TensorShape>& component_shapes,
                      const string& name);
 
-  Status Initialize() override;  // Must be called before any other method.
+  absl::Status Initialize()
+      override;  // Must be called before any other method.
 
   // Implementations of QueueInterface methods --------------------------------
   void TryEnqueue(const Tuple& tuple, OpKernelContext* ctx,
@@ -55,9 +59,9 @@ class RandomShuffleQueue : public TypedQueue<std::vector<PersistentTensor> > {
   void TryDequeueMany(int num_elements, OpKernelContext* ctx,
                       bool allow_small_batch,
                       CallbackWithTuple callback) override;
-  Status MatchesNodeDef(const NodeDef& node_def) override;
+  absl::Status MatchesNodeDef(const NodeDef& node_def) override;
 
-  int32 size() override {
+  int32 size() const override {
     mutex_lock lock(mu_);
     return queues_[0].size();
   }
@@ -67,25 +71,27 @@ class RandomShuffleQueue : public TypedQueue<std::vector<PersistentTensor> > {
 
   // Helper for dequeuing a single random element from queues_.
   void DequeueLocked(OpKernelContext* ctx, Tuple* tuple)
-      EXCLUSIVE_LOCKS_REQUIRED(mu_);
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
-  static Status GetElementComponentFromBatch(const Tuple& tuple, int64 index,
-                                             int component,
-                                             OpKernelContext* ctx,
-                                             PersistentTensor* out_tensor);
+  static absl::Status GetElementComponentFromBatch(const Tuple& tuple,
+                                                   int64_t index, int component,
+                                                   OpKernelContext* ctx,
+                                                   Tensor* out_tensor);
 
   const int32 min_after_dequeue_;
-  const int64 original_seed_;
-  const int64 original_seed2_;
+  const int64_t original_seed_;
+  const int64_t original_seed2_;
 
-  random::PhiloxRandom parent_generator_ GUARDED_BY(mu_);
-  random::SingleSampleAdapter<random::PhiloxRandom> generator_ GUARDED_BY(mu_);
+  random::PhiloxRandom parent_generator_ TF_GUARDED_BY(mu_);
+  random::SingleSampleAdapter<random::PhiloxRandom> generator_
+      TF_GUARDED_BY(mu_);
 
-  TF_DISALLOW_COPY_AND_ASSIGN(RandomShuffleQueue);
+  RandomShuffleQueue(const RandomShuffleQueue&) = delete;
+  void operator=(const RandomShuffleQueue&) = delete;
 };
 
 RandomShuffleQueue::RandomShuffleQueue(
-    int32 capacity, int32 min_after_dequeue, int64 seed, int64 seed2,
+    int32_t capacity, int32_t min_after_dequeue, int64_t seed, int64_t seed2,
     const DataTypeVector& component_dtypes,
     const std::vector<TensorShape>& component_shapes, const string& name)
     : TypedQueue(capacity, component_dtypes, component_shapes, name),
@@ -101,22 +107,22 @@ RandomShuffleQueue::RandomShuffleQueue(
   parent_generator_ = random::PhiloxRandom(seed, seed2);
 }
 
-Status RandomShuffleQueue::Initialize() {
+absl::Status RandomShuffleQueue::Initialize() {
   TF_RETURN_IF_ERROR(TypedQueue::Initialize());
 
   mutex_lock lock(mu_);
   for (int i = 0; i < num_components(); ++i) {
     queues_[i].reserve(min_after_dequeue_);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void RandomShuffleQueue::DequeueLocked(OpKernelContext* ctx, Tuple* tuple) {
   DCHECK_GT(queues_[0].size(), size_t{0});
-  int64 index = generator_() % queues_[0].size();
+  int64_t index = generator_() % queues_[0].size();
   (*tuple).reserve(num_components());
   for (int i = 0; i < num_components(); ++i) {
-    (*tuple).push_back(*queues_[i][index].AccessTensor(ctx));
+    (*tuple).push_back(queues_[i][index]);
     queues_[i][index] = queues_[i].back();
     queues_[i].pop_back();
   }
@@ -134,7 +140,7 @@ void RandomShuffleQueue::TryEnqueue(const Tuple& tuple, OpKernelContext* ctx,
     if (!already_cancelled) {
       enqueue_attempts_.emplace_back(
           1, callback, ctx, cm, token,
-          [tuple, this](Attempt* attempt) EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+          [tuple, this](Attempt* attempt) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
             if (closed_) {
               attempt->context->SetStatus(errors::Cancelled(
                   "RandomShuffleQueue '", name_, "' is closed."));
@@ -142,7 +148,7 @@ void RandomShuffleQueue::TryEnqueue(const Tuple& tuple, OpKernelContext* ctx,
             }
             if (queues_[0].size() < static_cast<size_t>(capacity_)) {
               for (int i = 0; i < num_components(); ++i) {
-                queues_[i].push_back(PersistentTensor(tuple[i]));
+                queues_[i].push_back(tuple[i]);
               }
               return kComplete;
             } else {
@@ -160,23 +166,22 @@ void RandomShuffleQueue::TryEnqueue(const Tuple& tuple, OpKernelContext* ctx,
 }
 
 /* static */
-Status RandomShuffleQueue::GetElementComponentFromBatch(
-    const Tuple& tuple, int64 index, int component, OpKernelContext* ctx,
-    PersistentTensor* out_tensor) {
+absl::Status RandomShuffleQueue::GetElementComponentFromBatch(
+    const Tuple& tuple, int64_t index, int component, OpKernelContext* ctx,
+    Tensor* out_tensor) {
   TensorShape element_shape(tuple[component].shape());
   element_shape.RemoveDim(0);
-  Tensor* element_access = nullptr;
-  TF_RETURN_IF_ERROR(ctx->allocate_persistent(
-      tuple[component].dtype(), element_shape, out_tensor, &element_access));
   TF_RETURN_IF_ERROR(
-      CopySliceToElement(tuple[component], element_access, index));
-  return Status::OK();
+      ctx->allocate_temp(tuple[component].dtype(), element_shape, out_tensor));
+  TF_RETURN_IF_ERROR(
+      batch_util::CopySliceToElement(tuple[component], out_tensor, index));
+  return absl::OkStatus();
 }
 
 void RandomShuffleQueue::TryEnqueueMany(const Tuple& tuple,
                                         OpKernelContext* ctx,
                                         DoneCallback callback) {
-  const int64 batch_size = tuple[0].dim_size(0);
+  const int64_t batch_size = tuple[0].dim_size(0);
   if (batch_size == 0) {
     callback();
     return;
@@ -192,7 +197,7 @@ void RandomShuffleQueue::TryEnqueueMany(const Tuple& tuple,
     if (!already_cancelled) {
       enqueue_attempts_.emplace_back(
           batch_size, callback, ctx, cm, token,
-          [tuple, this](Attempt* attempt) EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+          [tuple, this](Attempt* attempt) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
             if (closed_) {
               attempt->context->SetStatus(errors::Cancelled(
                   "RandomShuffleQueue '", name_, "' is closed."));
@@ -204,7 +209,7 @@ void RandomShuffleQueue::TryEnqueueMany(const Tuple& tuple,
               const int index =
                   tuple[0].dim_size(0) - attempt->elements_requested;
               for (int i = 0; i < num_components(); ++i) {
-                PersistentTensor element;
+                Tensor element;
                 attempt->context->SetStatus(GetElementComponentFromBatch(
                     tuple, index, i, attempt->context, &element));
                 if (!attempt->context->status().ok()) return kComplete;
@@ -240,8 +245,8 @@ void RandomShuffleQueue::TryDequeue(OpKernelContext* ctx,
       // TODO(josh11b): This makes two copies of callback, avoid this if possible.
       dequeue_attempts_.emplace_back(
           1, [callback]() { callback(Tuple()); }, ctx, cm, token,
-          [callback, this](Attempt* attempt) EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-            int32 queue_size = queues_[0].size();
+          [callback, this](Attempt* attempt) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+            int32_t queue_size = queues_[0].size();
             if (closed_ && queue_size == 0) {
               attempt->context->SetStatus(errors::OutOfRange(
                   "RandomShuffleQueue '", name_, "' is closed and has ",
@@ -308,7 +313,13 @@ void RandomShuffleQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
       // an optimized case where the queue 'knows' what attributes to
       // use, and plumbs them through here.
       Tensor element;
-      ctx->allocate_temp(component_dtypes_[i], ManyOutShape(i, 0), &element);
+      absl::Status s = ctx->allocate_temp(component_dtypes_[i],
+                                          ManyOutShape(i, 0), &element);
+      if (!s.ok()) {
+        ctx->SetStatus(s);
+        callback(Tuple());
+        return;
+      }
       tuple.emplace_back(element);
     }
     callback(tuple);
@@ -326,94 +337,95 @@ void RandomShuffleQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
       // TODO(josh11b): This makes two copies of callback, avoid this if possible.
       dequeue_attempts_.emplace_back(
           num_elements, [callback]() { callback(Tuple()); }, ctx, cm, token,
-          [callback, allow_small_batch, this](Attempt* attempt)
-              EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-                int32 queue_size = queues_[0].size();
-                if (closed_ && queue_size < attempt->elements_requested) {
-                  // If we don't have enough for a full dequeue, we have
-                  // to reset the attempt tuple.
-                  if (!attempt->tuple.empty()) {
-                    // Restore already-dequeued elements to the queue.
-                    for (int64 i = attempt->tuple[0].dim_size(0) -
-                                   attempt->elements_requested - 1;
-                         i >= 0; --i) {
-                      for (int j = 0; j < num_components(); ++j) {
-                        PersistentTensor element;
-                        Status s = GetElementComponentFromBatch(
-                            attempt->tuple, i, j, attempt->context, &element);
-                        if (!s.ok()) {
-                          attempt->context->SetStatus(
-                              errors::DataLoss("Failed to restore element from "
-                                               "partially-dequeued batch "
-                                               "to RandomShuffleQueue: ",
-                                               s.error_message()));
-                        }
-                        queues_[j].push_back(element);
-                      }
+          [callback, allow_small_batch,
+           this](Attempt* attempt) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+            int32_t queue_size = queues_[0].size();
+            if (closed_ && queue_size < attempt->elements_requested) {
+              // If we don't have enough for a full dequeue, we have
+              // to reset the attempt tuple.
+              if (!attempt->tuple.empty()) {
+                // Restore already-dequeued elements to the queue.
+                for (int64_t i = attempt->tuple[0].dim_size(0) -
+                                 attempt->elements_requested - 1;
+                     i >= 0; --i) {
+                  for (int j = 0; j < num_components(); ++j) {
+                    Tensor element;
+                    absl::Status s = GetElementComponentFromBatch(
+                        attempt->tuple, i, j, attempt->context, &element);
+                    if (!s.ok()) {
+                      attempt->context->SetStatus(
+                          errors::DataLoss("Failed to restore element from "
+                                           "partially-dequeued batch "
+                                           "to RandomShuffleQueue: ",
+                                           s.message()));
                     }
-                  }
-                  if (allow_small_batch && queues_[0].size() > 0) {
-                    // Request all remaining elements in the queue.
-                    queue_size = queues_[0].size();
-                    attempt->tuple.clear();
-                    attempt->elements_requested = queue_size;
-                  } else {
-                    if (allow_small_batch) {
-                      // There may be some other attempts containing
-                      // values.  If so, we'll yield and wait for them
-                      // to add elements to the queue.
-                      if (!enqueue_attempts_.empty()) return kProgress;
-                    }
-                    if (attempt->context->status().ok()) {
-                      attempt->context->SetStatus(errors::OutOfRange(
-                          "RandomShuffleQueue '", name_, "' is closed and has ",
-                          "insufficient elements (requested ",
-                          attempt->elements_requested, ", current size ",
-                          queue_size, ")"));
-                    }
-                    return kComplete;
+                    queues_[j].push_back(element);
                   }
                 }
+              }
+              if (allow_small_batch && !queues_[0].empty()) {
+                // Request all remaining elements in the queue.
+                queue_size = queues_[0].size();
+                attempt->tuple.clear();
+                attempt->elements_requested = queue_size;
+              } else {
+                if (allow_small_batch) {
+                  // There may be some other attempts containing
+                  // values.  If so, we'll yield and wait for them
+                  // to add elements to the queue.
+                  if (!enqueue_attempts_.empty()) return kProgress;
+                }
+                if (attempt->context->status().ok()) {
+                  attempt->context->SetStatus(errors::OutOfRange(
+                      "RandomShuffleQueue '", name_, "' is closed and has ",
+                      "insufficient elements (requested ",
+                      attempt->elements_requested, ", current size ",
+                      queue_size, ")"));
+                }
+                return kComplete;
+              }
+            }
 
-                RunResult result = kNoProgress;
-                if (!closed_) queue_size -= min_after_dequeue_;
-                for (; queue_size > 0; --queue_size) {
-                  if (attempt->tuple.empty()) {
-                    // Only allocate tuple when we have something to dequeue
-                    // so we don't use excessive memory when there are many
-                    // blocked dequeue attempts waiting.
-                    attempt->tuple.reserve(num_components());
-                    for (int i = 0; i < num_components(); ++i) {
-                      const TensorShape shape =
-                          ManyOutShape(i, attempt->elements_requested);
-                      Tensor element;
-                      attempt->context->allocate_temp(component_dtypes_[i],
-                                                      shape, &element);
-                      attempt->tuple.emplace_back(element);
-                    }
-                  }
-                  result = kProgress;
-                  Tuple tuple;
-                  DequeueLocked(attempt->context, &tuple);
-                  const int index = attempt->tuple[0].dim_size(0) -
-                                    attempt->elements_requested;
-                  for (int i = 0; i < num_components(); ++i) {
-                    attempt->context->SetStatus(CopyElementToSlice(
-                        tuple[i], &attempt->tuple[i], index));
-                    if (!attempt->context->status().ok()) return kComplete;
-                  }
-                  tuple.clear();
-                  --attempt->elements_requested;
-                  if (attempt->elements_requested == 0) {
-                    tuple = attempt->tuple;
-                    attempt->done_callback = [callback, tuple]() {
-                      callback(tuple);
-                    };
-                    return kComplete;
-                  }
+            RunResult result = kNoProgress;
+            if (!closed_) queue_size -= min_after_dequeue_;
+            for (; queue_size > 0; --queue_size) {
+              if (attempt->tuple.empty()) {
+                // Only allocate tuple when we have something to dequeue
+                // so we don't use excessive memory when there are many
+                // blocked dequeue attempts waiting.
+                attempt->tuple.reserve(num_components());
+                for (int i = 0; i < num_components(); ++i) {
+                  const TensorShape shape =
+                      ManyOutShape(i, attempt->elements_requested);
+                  Tensor element;
+                  attempt->context->SetStatus(attempt->context->allocate_temp(
+                      component_dtypes_[i], shape, &element));
+                  if (!attempt->context->status().ok()) return kComplete;
+                  attempt->tuple.emplace_back(element);
                 }
-                return result;
-              });
+              }
+              result = kProgress;
+              Tuple tuple;
+              DequeueLocked(attempt->context, &tuple);
+              const int index =
+                  attempt->tuple[0].dim_size(0) - attempt->elements_requested;
+              for (int i = 0; i < num_components(); ++i) {
+                attempt->context->SetStatus(batch_util::CopyElementToSlice(
+                    std::move(tuple[i]), &attempt->tuple[i], index));
+                if (!attempt->context->status().ok()) return kComplete;
+              }
+              tuple.clear();
+              --attempt->elements_requested;
+              if (attempt->elements_requested == 0) {
+                tuple = attempt->tuple;
+                attempt->done_callback = [callback, tuple]() {
+                  callback(tuple);
+                };
+                return kComplete;
+              }
+            }
+            return result;
+          });
     }
   }
   if (!already_cancelled) {
@@ -424,11 +436,15 @@ void RandomShuffleQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
   }
 }
 
-Status RandomShuffleQueue::MatchesNodeDef(const NodeDef& node_def) {
-  TF_RETURN_IF_ERROR(MatchesNodeDefOp(node_def, "RandomShuffleQueue"));
+absl::Status RandomShuffleQueue::MatchesNodeDef(const NodeDef& node_def) {
+  if (!MatchesNodeDefOp(node_def, "RandomShuffleQueue").ok() &&
+      !MatchesNodeDefOp(node_def, "RandomShuffleQueueV2").ok()) {
+    return errors::InvalidArgument("Expected RandomShuffleQueue, found ",
+                                   node_def.op());
+  }
   TF_RETURN_IF_ERROR(MatchesNodeDefCapacity(node_def, capacity_));
 
-  int32 min_after_dequeue = -1;
+  int32_t min_after_dequeue = -1;
   TF_RETURN_IF_ERROR(
       GetNodeAttr(node_def, "min_after_dequeue", &min_after_dequeue));
   if (min_after_dequeue != min_after_dequeue_) {
@@ -437,8 +453,8 @@ Status RandomShuffleQueue::MatchesNodeDef(const NodeDef& node_def) {
         " but requested min_after_dequeue was ", min_after_dequeue, ".");
   }
 
-  int64 seed = -1;
-  int64 seed2 = -1;
+  int64_t seed = -1;
+  int64_t seed2 = -1;
   TF_RETURN_IF_ERROR(GetNodeAttr(node_def, "seed", &seed));
   TF_RETURN_IF_ERROR(GetNodeAttr(node_def, "seed2", &seed2));
   if ((seed != 0 || seed2 != 0) &&
@@ -452,17 +468,17 @@ Status RandomShuffleQueue::MatchesNodeDef(const NodeDef& node_def) {
   TF_RETURN_IF_ERROR(MatchesNodeDefTypes(node_def));
   TF_RETURN_IF_ERROR(MatchesNodeDefShapes(node_def));
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Defines a RandomShuffleQueueOp, which produces a Queue (specifically, one
 // backed by RandomShuffleQueue) that persists across different graph
 // executions, and sessions. Running this op produces a single-element
 // tensor of handles to Queues in the corresponding device.
-class RandomShuffleQueueOp : public QueueOp {
+class RandomShuffleQueueOp : public TypedQueueOp {
  public:
   explicit RandomShuffleQueueOp(OpKernelConstruction* context)
-      : QueueOp(context) {
+      : TypedQueueOp(context) {
     OP_REQUIRES_OK(context,
                    context->GetAttr("min_after_dequeue", &min_after_dequeue_));
     OP_REQUIRES(context, min_after_dequeue_ >= 0,
@@ -478,32 +494,27 @@ class RandomShuffleQueueOp : public QueueOp {
     OP_REQUIRES_OK(context, context->GetAttr("shapes", &component_shapes_));
   }
 
- protected:
-  CreatorCallback GetCreator() const override {
-    return [this](QueueInterface** ret) {
-      auto* q = new RandomShuffleQueue(capacity_, min_after_dequeue_, seed_,
-                                       seed2_, component_types_,
-                                       component_shapes_, cinfo_.name());
-      Status s = q->Initialize();
-      if (s.ok()) {
-        *ret = q;
-      } else {
-        q->Unref();
-      }
-      return s;
-    };
+ private:
+  absl::Status CreateResource(QueueInterface** ret) override
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    RandomShuffleQueue* queue = new RandomShuffleQueue(
+        capacity_, min_after_dequeue_, seed_, seed2_, component_types_,
+        component_shapes_, cinfo_.name());
+    return CreateTypedQueue(queue, ret);
   }
 
- private:
   int32 min_after_dequeue_;
-  int64 seed_;
-  int64 seed2_;
+  int64_t seed_;
+  int64_t seed2_;
   std::vector<TensorShape> component_shapes_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(RandomShuffleQueueOp);
+  RandomShuffleQueueOp(const RandomShuffleQueueOp&) = delete;
+  void operator=(const RandomShuffleQueueOp&) = delete;
 };
 
 REGISTER_KERNEL_BUILDER(Name("RandomShuffleQueue").Device(DEVICE_CPU),
+                        RandomShuffleQueueOp);
+REGISTER_KERNEL_BUILDER(Name("RandomShuffleQueueV2").Device(DEVICE_CPU),
                         RandomShuffleQueueOp);
 
 }  // namespace tensorflow

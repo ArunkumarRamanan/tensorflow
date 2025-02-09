@@ -18,7 +18,7 @@ limitations under the License.
 #include <limits>
 #include <vector>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -31,9 +31,15 @@ limitations under the License.
 namespace tensorflow {
 
 typedef Eigen::ThreadPoolDevice CPUDevice;
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 typedef Eigen::GpuDevice GPUDevice;
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+#if !defined(PLUGGABLE_DEVICE_SUPPORTED_MACOS) && defined(__APPLE__) && \
+    !defined(ANDROID) && !defined(__ANDROID__) &&                       \
+    (!defined(TARGET_OS_IOS) || !TARGET_OS_IOS)
+#define PLUGGABLE_DEVICE_SUPPORTED_MACOS 1
+#endif
 
 // --------------------------------------------------------------------------
 template <typename Device, typename T>
@@ -47,20 +53,10 @@ class PackOp : public OpKernel {
   }
 
   void Compute(OpKernelContext* c) override {
-    OpInputList values;
-    OP_REQUIRES_OK(c, c->input_list("values", &values));
-    const int num = values.size();
+    const int num = num_inputs();
+    const Tensor& first_input = c->input(0);
 
-    // Verify that all input shapes match
-    for (int i = 1; i < num; i++) {
-      OP_REQUIRES(c, values[0].shape().IsSameSize(values[i].shape()),
-                  errors::InvalidArgument(
-                      "Shapes of all inputs must match: values[0].shape = ",
-                      values[0].shape().DebugString(), " != values[", i,
-                      "].shape = ", values[i].shape().DebugString()));
-    }
-
-    int expanded_num_dims = values[0].dims() + 1;
+    int expanded_num_dims = first_input.dims() + 1;
     int axis = axis_;
     if (axis < 0) axis += expanded_num_dims;
 
@@ -69,13 +65,13 @@ class PackOp : public OpKernel {
                                         -expanded_num_dims, ", ",
                                         expanded_num_dims, ")"));
 
-    TensorShape output_shape(values[0].shape());
+    TensorShape output_shape(first_input.shape());
     output_shape.InsertDim(axis, num);
 
     // In the num = 1 case, just reshape the input
     if (num == 1) {
       Tensor output;
-      CHECK(output.CopyFrom(values[0], output_shape));
+      CHECK(output.CopyFrom(first_input, output_shape));
       c->set_output(0, output);
       return;
     }
@@ -84,37 +80,43 @@ class PackOp : public OpKernel {
     Tensor* output;
     OP_REQUIRES_OK(c, c->allocate_output(0, output_shape, &output));
 
-    int64 before_dim = 1;
+    int64_t before_dim = 1;
     for (int i = 0; i < axis; ++i) {
       before_dim *= output_shape.dim_size(i);
     }
 
-    int64 after_dim = 1;
+    int64_t after_dim = 1;
     for (int i = axis + 1; i < output_shape.dims(); ++i) {
       after_dim *= output_shape.dim_size(i);
     }
 
-    const int64 axis_dim = output_shape.dim_size(axis);
+    const int64_t axis_dim = output_shape.dim_size(axis);
 
-    const int64 output_size = output->NumElements();
+    const int64_t output_size = output->NumElements();
+    auto output_flat = output->shaped<T, 2>({before_dim, after_dim * axis_dim});
+
+    // Except for shapes, pack is a special case of concat, so we reuse the
+    // same computational kernels.
+    ConstMatrixVector inputs_flat;
+    inputs_flat.reserve(num);
+    for (int i = 0; i < num; ++i) {
+      const Tensor& input = c->input(i);
+      OP_REQUIRES(c, first_input.shape().IsSameSize(input.shape()),
+                  errors::InvalidArgument(
+                      "Shapes of all inputs must match: values[0].shape = ",
+                      first_input.shape().DebugString(), " != values[", i,
+                      "].shape = ", input.shape().DebugString()));
+
+      inputs_flat.emplace_back(new typename TTypes<T, 2>::ConstMatrix(
+          input.shaped<T, 2>({before_dim, after_dim})));
+    }
     if (output_size > 0) {
-      auto output_flat =
-          output->shaped<T, 2>({before_dim, after_dim * axis_dim});
-
-      // Except for shapes, pack is a special case of concat, so we reuse the
-      // same computational kernels.
-      ConstMatrixVector inputs_flat;
-      inputs_flat.reserve(num);
-      for (int i = 0; i < num; ++i) {
-        inputs_flat.emplace_back(new typename TTypes<T, 2>::ConstMatrix(
-            values[i].shaped<T, 2>({before_dim, after_dim})));
-      }
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
       if (std::is_same<Device, GPUDevice>::value) {
         ConcatGPU<T>(c, inputs_flat, output, &output_flat);
         return;
       }
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
       ConcatCPU<T>(c->device(), inputs_flat, &output_flat);
     }
   }
@@ -130,18 +132,33 @@ class PackOp : public OpKernel {
 
 TF_CALL_ALL_TYPES(REGISTER_PACK);
 TF_CALL_QUANTIZED_TYPES(REGISTER_PACK);
-TF_CALL_bfloat16(REGISTER_PACK);
+TF_CALL_qint16(REGISTER_PACK);
+TF_CALL_quint16(REGISTER_PACK);
+TF_CALL_float8_e5m2(REGISTER_PACK);
+TF_CALL_float8_e4m3fn(REGISTER_PACK);
+
+#if defined(IS_MOBILE_PLATFORM) && !defined(SUPPORT_SELECTIVE_REGISTRATION)
+// Primarily used for SavedModel support on mobile.
+REGISTER_PACK(tstring);
+#endif  // defined(IS_MOBILE_PLATFORM) &&
+        // !defined(SUPPORT_SELECTIVE_REGISTRATION)
 
 #undef REGISTER_PACK
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #define REGISTER_GPU(type)                                       \
   REGISTER_KERNEL_BUILDER(                                       \
       Name("Pack").Device(DEVICE_GPU).TypeConstraint<type>("T"), \
       PackOp<GPUDevice, type>)
 
-TF_CALL_GPU_NUMBER_TYPES(REGISTER_GPU);
+TF_CALL_int64(REGISTER_GPU);
+TF_CALL_int16(REGISTER_GPU);
+TF_CALL_uint32(REGISTER_GPU);
+TF_CALL_uint64(REGISTER_GPU);
+TF_CALL_GPU_ALL_TYPES(REGISTER_GPU);
+TF_CALL_float8_e5m2(REGISTER_GPU);
+TF_CALL_float8_e4m3fn(REGISTER_GPU);
 #undef REGISTER_GPU
 
 // A special GPU kernel for int32.
@@ -154,6 +171,17 @@ REGISTER_KERNEL_BUILDER(Name("Pack")
                             .TypeConstraint<int32>("T"),
                         PackOp<CPUDevice, int32>);
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
+#if defined(PLUGGABLE_DEVICE_SUPPORTED_MACOS)
+#define REGISTER_DEFAULT_PACK(type)                       \
+  REGISTER_KERNEL_BUILDER(Name("Pack")                    \
+                              .Device(DEVICE_DEFAULT)     \
+                              .HostMemory("values")       \
+                              .HostMemory("output")       \
+                              .TypeConstraint<type>("T"), \
+                          PackOp<CPUDevice, type>);
+TF_CALL_ALL_TYPES(REGISTER_DEFAULT_PACK)
+#undef REGISTER_DEFAULT_PACK
+#endif
 }  // namespace tensorflow

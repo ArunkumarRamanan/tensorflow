@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_KERNELS_WINOGRAD_TRANSFORM_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_KERNELS_WINOGRAD_TRANSFORM_H_
+#ifndef TENSORFLOW_CORE_KERNELS_WINOGRAD_TRANSFORM_H_
+#define TENSORFLOW_CORE_KERNELS_WINOGRAD_TRANSFORM_H_
 
 #include "tensorflow/core/kernels/deep_conv2d.h"
 
@@ -33,13 +33,13 @@ class WinogradTransform : public DeepConv2DTransform<T> {
   WinogradTransform()
       : filter_shape_(3, 3), input_shape_(4, 4), output_shape_(2, 2) {}
 
-  virtual void GetFilterTransformMatrix(const int64 rows, const int64 cols,
+  virtual void GetFilterTransformMatrix(const int64_t rows, const int64_t cols,
                                         T* transform_matrix) const;
 
-  virtual void GetInputTransformMatrix(const int64 rows, const int64 cols,
+  virtual void GetInputTransformMatrix(const int64_t rows, const int64_t cols,
                                        T* transform_matrix) const;
 
-  virtual void GetOutputTransformMatrix(const int64 rows, const int64 cols,
+  virtual void GetOutputTransformMatrix(const int64_t rows, const int64_t cols,
                                         T* transform_matrix) const;
 
   virtual const Shape& filter_shape() const { return filter_shape_; }
@@ -64,8 +64,8 @@ class WinogradTransform : public DeepConv2DTransform<T> {
 //   [input_tile_spatial_size, filter_spatial_size]
 //
 template <typename T>
-void WinogradTransform<T>::GetFilterTransformMatrix(const int64 rows,
-                                                    const int64 cols,
+void WinogradTransform<T>::GetFilterTransformMatrix(const int64_t rows,
+                                                    const int64_t cols,
                                                     T* transform_matrix) const {
   CHECK_GT(rows, 0);
   CHECK_GT(cols, 0);
@@ -188,8 +188,8 @@ void WinogradTransform<T>::GetFilterTransformMatrix(const int64 rows,
 //   [tile_spatial_size, tile_spatial_size]
 //
 template <typename T>
-void WinogradTransform<T>::GetInputTransformMatrix(const int64 rows,
-                                                   const int64 cols,
+void WinogradTransform<T>::GetInputTransformMatrix(const int64_t rows,
+                                                   const int64_t cols,
                                                    T* transform_matrix) const {
   CHECK_GT(rows, 0);
   CHECK_GT(cols, 0);
@@ -310,8 +310,8 @@ void WinogradTransform<T>::GetInputTransformMatrix(const int64 rows,
 //   [out_tile_spatial_size, tile_spatial_size]
 //
 template <typename T>
-void WinogradTransform<T>::GetOutputTransformMatrix(const int64 rows,
-                                                    const int64 cols,
+void WinogradTransform<T>::GetOutputTransformMatrix(const int64_t rows,
+                                                    const int64_t cols,
                                                     T* transform_matrix) const {
   CHECK_GT(rows, 0);
   CHECK_GT(cols, 0);
@@ -374,4 +374,4 @@ void WinogradTransform<T>::GetOutputTransformMatrix(const int64 rows,
 
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_KERNELS_WINOGRAD_TRANSFORM_H_
+#endif  // TENSORFLOW_CORE_KERNELS_WINOGRAD_TRANSFORM_H_

@@ -13,22 +13,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-// The utility to check whether we have Cudnn dependency.
+// The utility to check Cudnn dependency and set Cudnn-related flags.
 
-#ifndef TENSORFLOW_UTIL_USE_CUDNN_H_
-#define TENSORFLOW_UTIL_USE_CUDNN_H_
+#ifndef TENSORFLOW_CORE_UTIL_USE_CUDNN_H_
+#define TENSORFLOW_CORE_UTIL_USE_CUDNN_H_
+
+#include <cstdint>
+
+#include "xla/tsl/util/use_cudnn.h"
 
 namespace tensorflow {
 
-bool CanUseCudnn();
-bool CudnnUseAutotune();
+using tsl::CudnnDisableConv1x1Optimization;
+using tsl::CudnnRnnUseAutotune;
+using tsl::CudnnUseAutotune;
+using tsl::CudnnUseFrontend;
+using tsl::CudnnUseRuntimeFusion;
+using tsl::DebugCudnnRnn;
+using tsl::DebugCudnnRnnAlgo;
+using tsl::DebugCudnnRnnUseTensorOps;
+using tsl::ShouldCudnnGroupedConvolutionBeUsed;
 
-namespace internal {
-
-// This function is for transition only. And it may go away at any time.
-bool AvgPoolUseCudnn();
-
-}  // namespace internal
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_UTIL_USE_CUDNN_H_
+#endif  // TENSORFLOW_CORE_UTIL_USE_CUDNN_H_

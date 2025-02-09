@@ -36,10 +36,10 @@ class EncodeBase64Op : public OpKernel {
     OP_REQUIRES_OK(context, context->allocate_output(0, input_tensor.shape(),
                                                      &output_tensor));
 
-    auto input = input_tensor.flat<string>();
-    auto output = output_tensor->flat<string>();
+    auto input = input_tensor.flat<tstring>();
+    auto output = output_tensor->flat<tstring>();
 
-    for (int64 i = 0; i < input.dimension(0); ++i) {
+    for (int64_t i = 0; i < input.dimension(0); ++i) {
       OP_REQUIRES_OK(context, Base64Encode(input(i), pad_, &output(i)));
     }
   }
@@ -61,10 +61,10 @@ class DecodeBase64Op : public OpKernel {
     OP_REQUIRES_OK(context, context->allocate_output(0, input_tensor.shape(),
                                                      &output_tensor));
 
-    auto input = input_tensor.flat<string>();
-    auto output = output_tensor->flat<string>();
+    auto input = input_tensor.flat<tstring>();
+    auto output = output_tensor->flat<tstring>();
 
-    for (int64 i = 0; i < input.dimension(0); ++i) {
+    for (int64_t i = 0; i < input.dimension(0); ++i) {
       OP_REQUIRES_OK(context, Base64Decode(input(i), &output(i)));
     }
   }
